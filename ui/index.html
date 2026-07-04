@@ -32,6 +32,23 @@
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .muted { color:var(--dim); }
   .hidden { display:none !important; }
+
+  /* wizard step indicator */
+  .stepper { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+  .steps { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .stepchip { display:flex; align-items:center; gap:7px; padding:5px 12px; border-radius:20px;
+    font-size:13px; color:var(--dim); background:var(--panel2); border:1px solid var(--line);
+    user-select:none; }
+  .stepchip b { display:inline-flex; width:19px; height:19px; align-items:center;
+    justify-content:center; border-radius:50%; background:var(--line); color:var(--text);
+    font-size:11px; font-weight:700; }
+  .stepchip.active { color:var(--text); border-color:var(--accent); }
+  .stepchip.active b { background:var(--accent); color:#fff; }
+  .stepchip.done { color:var(--text); cursor:pointer; }
+  .stepchip.done b { background:var(--good); color:#fff; }
+  .stepchip.done:hover { border-color:var(--accent); }
+  .stepchip.future { opacity:.45; }
+  .stepsep { width:16px; height:2px; background:var(--line); border-radius:2px; }
   .pill { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
     padding:2px 6px; border-radius:5px; }
   .pill.dup { background:rgba(163,113,247,.18); color:var(--dup); }
@@ -104,11 +121,12 @@
   <span class="sub">MakeMKV + TMDB · drag titles onto episodes</span>
 </header>
 <main>
+  <nav id="stepper" class="stepper"></nav>
   <div id="err"></div>
 
   <!-- STEP 1: DRIVE -->
   <section class="step" id="s-drive">
-    <h2>1 · Disc</h2>
+    <h2>Disc</h2>
     <div class="row">
       <button class="ghost" onclick="loadDrives()">↻ Refresh drives</button>
       <span id="drive-list" class="row"></span>
@@ -121,7 +139,7 @@
 
   <!-- STEP 2: IDENTIFY -->
   <section class="step hidden" id="s-id">
-    <h2>2 · Identify</h2>
+    <h2>Identify</h2>
     <div class="row" style="margin-bottom:10px">
       <span class="muted">Disc label:</span> <code id="disc-label"></code>
       <span class="muted">·</span>
@@ -142,7 +160,7 @@
 
   <!-- STEP 3: MATCH (TV) -->
   <section class="step hidden" id="s-match">
-    <h2>3 · Match titles → episodes</h2>
+    <h2>Match titles → episodes</h2>
     <div id="match-banner"></div>
     <div class="row" style="margin-bottom:12px; gap:8px">
       <button class="ghost" onclick="autoMap()">↺ Auto-map from e<span id="autostart">1</span></button>
@@ -167,7 +185,7 @@
 
   <!-- STEP 3b: MOVIE -->
   <section class="step hidden" id="s-movie">
-    <h2>3 · Movie</h2>
+    <h2>Movie</h2>
     <div id="movie-body"></div>
     <div class="row" style="margin-top:14px">
       <button onclick="goRip()">Review &amp; rip →</button>
@@ -176,7 +194,7 @@
 
   <!-- STEP 4: RIP -->
   <section class="step hidden" id="s-rip">
-    <h2>4 · Rip</h2>
+    <h2>Rip</h2>
     <div id="rip-preview"></div>
     <div class="row" style="margin-top:12px">
       <button id="rip-btn" onclick="startRip()">Start rip</button>
@@ -187,7 +205,8 @@
 </main>
 
 <script>
-const state = { drive:null, titles:[], titleById:{}, kind:'tv', sel:null, assign:{} };
+const state = { drive:null, titles:[], titleById:{}, kind:'tv', sel:null, assign:{},
+                step:1, maxStep:1 };
 
 function showErr(msg){
   document.getElementById('err').innerHTML =
@@ -202,6 +221,35 @@ async function api(path, body){
   return j;
 }
 function show(id, on){ document.getElementById(id).classList.toggle('hidden', !on); }
+
+/* ---------- wizard navigation ---------- */
+const ALL_SECTIONS = ['s-drive','s-id','s-match','s-movie','s-rip'];
+function stepSections(n){
+  if(n===1) return ['s-drive'];
+  if(n===2) return ['s-id'];
+  if(n===3) return state.kind==='movie' ? ['s-movie'] : ['s-match'];
+  return ['s-rip'];
+}
+function goStep(n){
+  state.step = n;
+  state.maxStep = Math.max(state.maxStep, n);
+  ALL_SECTIONS.forEach(id => show(id, false));
+  stepSections(n).forEach(id => show(id, true));
+  renderStepper();
+  window.scrollTo({ top:0, behavior:'smooth' });
+}
+function renderStepper(){
+  const labels = ['Disc', 'Identify', state.kind==='movie' ? 'Movie' : 'Match', 'Rip'];
+  const cur = state.step, max = state.maxStep;
+  const chips = labels.map((lab, i) => {
+    const n = i + 1;
+    const cls = n===cur ? 'active' : (n <= max ? 'done' : 'future');  // done steps are clickable
+    const click = cls==='done' ? `onclick="goStep(${n})"` : '';
+    return `<span class="stepchip ${cls}" ${click}><b>${n}</b> ${lab}</span>`;
+  }).join('<span class="stepsep"></span>');
+  const back = cur > 1 ? `<button class="ghost" onclick="goStep(${cur-1})">← Back</button>` : '';
+  document.getElementById('stepper').innerHTML = back + `<div class="steps">${chips}</div>`;
+}
 
 /* ---------- STEP 1: drives ---------- */
 async function loadDrives(){
@@ -246,8 +294,7 @@ async function scan(){
     document.querySelector(`input[name=kind][value=${s.type}]`).checked = true;
     if(s.hints && s.hints.season) document.getElementById('season').value = s.hints.season;
     onKind();
-    show('s-id', true);
-    document.getElementById('s-id').scrollIntoView({behavior:'smooth'});
+    goStep(2);
     search();
   } catch(e){ showErr(e.message); st.textContent=''; }
   document.getElementById('scan-btn').disabled = false;
@@ -255,6 +302,7 @@ async function scan(){
 function onKind(){
   state.kind = document.querySelector('input[name=kind]:checked').value;
   show('tv-season-wrap', state.kind==='tv');
+  renderStepper();  // step-3 label reflects Movie vs Match
 }
 async function search(){
   showErr('');
@@ -290,11 +338,10 @@ async function reselect(){
     const sel = await api('/api/select',
       {kind:state.kind, id:state.selId, season:document.getElementById('season').value});
     state.sel = sel;
-    if(sel.kind==='tv'){ renderMatch(); show('s-match',true); show('s-movie',false);
-      startThumbPolling();
-      document.getElementById('s-match').scrollIntoView({behavior:'smooth'}); }
-    else { renderMovie(); show('s-movie',true); show('s-match',false);
-      document.getElementById('s-movie').scrollIntoView({behavior:'smooth'}); }
+    state.kind = sel.kind;
+    if(sel.kind==='tv'){ renderMatch(); startThumbPolling(); }
+    else { renderMovie(); }
+    goStep(3);
   } catch(e){ showErr(e.message); }
 }
 
@@ -465,8 +512,7 @@ async function goRip(){
       + preview.map(p=>`<div class="riprow">${p.episode?('s'+String(state.sel.season).padStart(2,'0')+'e'+String(p.episode).padStart(2,'0')+' '):''}
         → <code>${esc(p.target.split('\\').pop())}</code> ${p.exists?'<span class="pill nas">skip</span>':''}</div>`).join('');
   }
-  show('s-rip',true);
-  document.getElementById('s-rip').scrollIntoView({behavior:'smooth'});
+  goStep(4);
 }
 async function startRip(){
   showErr('');
@@ -497,11 +543,30 @@ async function pollStatus(){
       document.getElementById('rip-btn').disabled=false;
       const done=(job.items||[]).filter(i=>i.status==='done').length;
       document.getElementById('rip-note').innerHTML =
-        `<span class="pill ok">finished</span> ${done} ripped`;
+        `<span class="pill ok">finished</span> ${done} ripped &nbsp;`+
+        `<button onclick="resetWizard()">⟲ Rip another disc</button>`;
     }
   } catch(e){ setTimeout(pollStatus, 1200); }
 }
 
+/* ---------- reset for the next disc ---------- */
+function resetWizard(){
+  Object.assign(state, { drive:null, titles:[], titleById:{}, kind:'tv',
+    sel:null, selId:null, assign:{}, step:1, maxStep:1, thumbPolling:false });
+  ['results','pool','episodes','match-banner','rip-preview','rip-progress',
+   'rip-note','thumb-progress','drive-list'].forEach(id=>document.getElementById(id).innerHTML='');
+  document.getElementById('scan-status').textContent='';
+  document.getElementById('scan-btn').disabled=true;
+  document.getElementById('rip-btn').disabled=false;
+  document.getElementById('q').value='';
+  document.getElementById('q-year').value='';
+  showErr('');
+  goStep(1);
+  loadDrives();   // refresh the drive list (swap in the next disc)
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+goStep(1);
 loadDrives();
 </script>
 </body>
