@@ -256,8 +256,24 @@ class MakeMKV:
             drives.append((index, drive_name, disc_label, loaded))
         return drives
 
+    @staticmethod
+    def gui_running():
+        """True if the MakeMKV desktop app is open. It holds the optical drive
+        exclusively, so makemkvcon can't read the disc while it runs."""
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq makemkv.exe", "/NH"],
+                capture_output=True, text=True, timeout=10).stdout.lower()
+            return "makemkv.exe" in out
+        except Exception:
+            return False
+
     def scan(self, drive_index):
         """Scan one disc and return a populated Disc object."""
+        if self.gui_running():
+            die("The MakeMKV app is open and is holding the drive.\n"
+                "Close the MakeMKV window, then scan again. Only one program can "
+                "read the optical drive at a time.")
         disc = Disc(drive_index)
         titles = {}
 
@@ -318,11 +334,31 @@ class MakeMKV:
 
         disc.titles = sorted(titles.values(), key=lambda t: t.id)
         if rc != 0 and not disc.titles:
-            die("MakeMKV could not read the disc. Is it inserted and readable?")
+            die(self._diagnose_failure(lines))
         return disc
 
-    def rip(self, drive_index, title, dest_folder):
-        """Rip a single title into dest_folder. Returns path to the .mkv."""
+    @staticmethod
+    def _diagnose_failure(lines):
+        """Turn MakeMKV's error spew into one actionable message."""
+        blob = "\n".join(lines).lower()
+        if "scsi error" in blob or "failed to open disc" in blob or "no seek complete" in blob:
+            return ("MakeMKV could not open the disc.\n"
+                    "Most common cause: another program is using the drive - "
+                    "close the MakeMKV app itself (and any other disc software), "
+                    "then try again. Only one program can read the drive at a time.\n"
+                    "If nothing else is using it, the disc may be dirty/scratched - "
+                    "clean it and reseat it.")
+        if "aacs" in blob or "revoked" in blob or "downloading latest" in blob:
+            return ("MakeMKV needs to refresh its AACS decryption keys for this "
+                    "disc. Open the MakeMKV app once (it updates keys on launch), "
+                    "close it, then retry - and make sure it's closed while this runs.")
+        return "MakeMKV could not read the disc. Is it inserted and readable?"
+
+    def rip(self, drive_index, title, dest_folder, on_progress=None):
+        """Rip a single title into dest_folder. Returns path to the .mkv.
+
+        on_progress(pct) is called as ripping proceeds; if omitted, a text
+        progress bar is printed to the console instead (CLI behaviour)."""
         Path(dest_folder).mkdir(parents=True, exist_ok=True)
         before = set(Path(dest_folder).glob("*.mkv"))
         last_pct = -1
@@ -338,18 +374,22 @@ class MakeMKV:
                     return
                 if pct != last_pct:
                     last_pct = pct
-                    bar = "#" * (pct // 3) + "-" * (33 - pct // 3)
-                    print(f"\r    ripping [{bar}] {pct:3d}%", end="", flush=True)
+                    if on_progress:
+                        on_progress(pct)
+                    else:
+                        bar = "#" * (pct // 3) + "-" * (33 - pct // 3)
+                        print(f"\r    ripping [{bar}] {pct:3d}%", end="", flush=True)
             elif ln.startswith("MSG:"):
                 f = self._fields(ln[4:])
-                if len(f) >= 4 and f[0] in ("5003", "5004", "5010"):
+                if len(f) >= 4 and f[0] in ("5003", "5004", "5010") and not on_progress:
                     print(f"\r    {red(f[3])}{' ' * 20}")
 
         rc, _ = self._run(
             ["--progress=-same", "mkv", f"disc:{drive_index}", str(title.id), dest_folder],
             on_line,
         )
-        print()  # newline after progress bar
+        if not on_progress:
+            print()  # newline after progress bar
         if rc is None:
             print(red(f"    stalled: no progress for {self.STALL_TIMEOUT}s "
                       "(disc may be unreadable at this title) - aborted."))
@@ -1019,9 +1059,13 @@ def execute_tv(mk, p, cfg, dry_run):
 # ---------------------------------------------------------------------------
 # Config / CLI
 # ---------------------------------------------------------------------------
+class DiskRipError(RuntimeError):
+    """Raised for expected, user-facing failures. The CLI prints it and exits;
+    the web app catches it and reports it as an error response."""
+
+
 def die(msg):
-    print(red("\nERROR: ") + msg, file=sys.stderr)
-    sys.exit(1)
+    raise DiskRipError(msg)
 
 
 def load_config(path):
@@ -1149,6 +1193,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except DiskRipError as e:
+        print(red("\nERROR: ") + str(e), file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(130)

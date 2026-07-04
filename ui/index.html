@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk-Rip</title>
+<style>
+  :root {
+    --bg:#0f1216; --panel:#171c23; --panel2:#1e242d; --line:#2a323d;
+    --text:#e6edf3; --dim:#8b98a5; --accent:#4a9eff; --good:#3fb950;
+    --warn:#d29922; --bad:#f85149; --dup:#a371f7;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+  header .sub { color:var(--dim); font-size:12px; }
+  main { max-width:1200px; margin:0 auto; padding:20px; }
+  .step { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; margin-bottom:16px; }
+  .step h2 { font-size:13px; text-transform:uppercase; letter-spacing:.6px;
+    color:var(--dim); margin:0 0 12px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px;
+    padding:8px 14px; font-size:13px; cursor:pointer; font-weight:600; }
+  button:hover { filter:brightness(1.1); }
+  button.ghost { background:var(--panel2); color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  input, select { background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:7px; padding:7px 10px; font-size:13px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--dim); }
+  .hidden { display:none !important; }
+  .pill { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+    padding:2px 6px; border-radius:5px; }
+  .pill.dup { background:rgba(163,113,247,.18); color:var(--dup); }
+  .pill.playall { background:rgba(210,153,34,.16); color:var(--warn); }
+  .pill.short { background:rgba(139,152,165,.15); color:var(--dim); }
+  .pill.nas { background:rgba(248,81,73,.15); color:var(--bad); }
+  .pill.ok { background:rgba(63,185,80,.15); color:var(--good); }
+  .pill.warn { background:rgba(210,153,34,.16); color:var(--warn); }
+
+  /* drive + candidate lists */
+  .card { background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+    padding:10px 12px; cursor:pointer; }
+  .card:hover { border-color:var(--accent); }
+  .card.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .list { display:flex; flex-direction:column; gap:8px; }
+
+  /* matching board */
+  .board { display:grid; grid-template-columns:340px 1fr; gap:16px; }
+  .col h3 { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px;
+    margin:0 0 8px; }
+  .pool { min-height:60px; background:var(--panel2); border:1px dashed var(--line);
+    border-radius:8px; padding:8px; display:flex; flex-direction:column; gap:6px; }
+  .pool.drag { border-color:var(--accent); background:rgba(74,158,255,.06); }
+  .title-chip { background:var(--panel); border:1px solid var(--line); border-radius:7px;
+    padding:7px 9px; cursor:grab; display:flex; align-items:center; gap:8px; }
+  .title-chip:active { cursor:grabbing; }
+  .title-chip .mono { font-variant-numeric:tabular-nums; }
+  .title-chip.ghost { opacity:.35; }
+  .ep { display:flex; align-items:center; gap:10px; background:var(--panel2);
+    border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; }
+  .ep.drop { border-color:var(--accent); background:rgba(74,158,255,.07); }
+  .ep .epnum { font-weight:700; color:var(--accent); width:52px; font-variant-numeric:tabular-nums; }
+  .ep .epname { flex:1; min-width:0; }
+  .ep .epname .nm { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ep .epname .meta { color:var(--dim); font-size:11px; }
+  .ep .slot { width:210px; }
+  .slot-empty { color:var(--dim); font-size:12px; border:1px dashed var(--line);
+    border-radius:6px; padding:6px 8px; text-align:center; }
+  .assigned { display:flex; align-items:center; gap:6px; background:var(--panel);
+    border:1px solid var(--line); border-radius:6px; padding:5px 8px; cursor:grab; }
+  .assigned .x { margin-left:auto; color:var(--dim); cursor:pointer; font-weight:700; }
+  .assigned .x:hover { color:var(--bad); }
+
+  /* rip progress */
+  .bar { height:8px; background:var(--panel); border-radius:5px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+  .riprow { padding:8px 0; border-bottom:1px solid var(--line); }
+  .banner { border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px; }
+  .banner.bad { background:rgba(248,81,73,.12); border:1px solid var(--bad); }
+  .banner.warn { background:rgba(210,153,34,.12); border:1px solid var(--warn); }
+  .banner.good { background:rgba(63,185,80,.10); border:1px solid var(--good); }
+  code { background:var(--panel); padding:1px 5px; border-radius:4px; font-size:12px; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--line);
+    border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>💿 Disk-Rip</h1>
+  <span class="sub">MakeMKV + TMDB · drag titles onto episodes</span>
+</header>
+<main>
+  <div id="err"></div>
+
+  <!-- STEP 1: DRIVE -->
+  <section class="step" id="s-drive">
+    <h2>1 · Disc</h2>
+    <div class="row">
+      <button class="ghost" onclick="loadDrives()">↻ Refresh drives</button>
+      <span id="drive-list" class="row"></span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="scan-btn" onclick="scan()" disabled>Scan disc</button>
+      <span id="scan-status" class="muted"></span>
+    </div>
+  </section>
+
+  <!-- STEP 2: IDENTIFY -->
+  <section class="step hidden" id="s-id">
+    <h2>2 · Identify</h2>
+    <div class="row" style="margin-bottom:10px">
+      <span class="muted">Disc label:</span> <code id="disc-label"></code>
+      <span class="muted">·</span>
+      <label class="row" style="gap:5px"><input type="radio" name="kind" value="tv" onchange="onKind()"> TV</label>
+      <label class="row" style="gap:5px"><input type="radio" name="kind" value="movie" onchange="onKind()"> Movie</label>
+    </div>
+    <div class="row">
+      <input id="q" placeholder="Search title…" style="width:280px" onkeydown="if(event.key==='Enter')search()">
+      <input id="q-year" placeholder="year" style="width:70px">
+      <button onclick="search()">Search TMDB</button>
+      <span id="tv-season-wrap" class="row hidden" style="gap:6px">
+        <span class="muted">Season</span>
+        <input id="season" type="number" min="0" value="1" style="width:64px" onchange="reselect()">
+      </span>
+    </div>
+    <div id="results" class="list" style="margin-top:12px"></div>
+  </section>
+
+  <!-- STEP 3: MATCH (TV) -->
+  <section class="step hidden" id="s-match">
+    <h2>3 · Match titles → episodes</h2>
+    <div id="match-banner"></div>
+    <div class="row" style="margin-bottom:12px; gap:8px">
+      <button class="ghost" onclick="autoMap()">↺ Auto-map from e<span id="autostart">1</span></button>
+      <button class="ghost" onclick="clearMap()">Clear</button>
+      <span class="muted">Drag a title onto an episode. Unassigned titles are skipped.</span>
+    </div>
+    <div class="board">
+      <div class="col">
+        <h3>Disc titles <span class="muted" id="pool-count"></span></h3>
+        <div id="pool" class="pool"></div>
+      </div>
+      <div class="col">
+        <h3 id="ep-head">Episodes</h3>
+        <div id="episodes"></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button onclick="goRip()">Review &amp; rip →</button>
+    </div>
+  </section>
+
+  <!-- STEP 3b: MOVIE -->
+  <section class="step hidden" id="s-movie">
+    <h2>3 · Movie</h2>
+    <div id="movie-body"></div>
+    <div class="row" style="margin-top:14px">
+      <button onclick="goRip()">Review &amp; rip →</button>
+    </div>
+  </section>
+
+  <!-- STEP 4: RIP -->
+  <section class="step hidden" id="s-rip">
+    <h2>4 · Rip</h2>
+    <div id="rip-preview"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="rip-btn" onclick="startRip()">Start rip</button>
+      <span id="rip-note" class="muted"></span>
+    </div>
+    <div id="rip-progress" style="margin-top:14px"></div>
+  </section>
+</main>
+
+<script>
+const state = { drive:null, titles:[], titleById:{}, kind:'tv', sel:null, assign:{} };
+
+function showErr(msg){
+  document.getElementById('err').innerHTML =
+    msg ? `<div class="banner bad">⚠ ${esc(msg)}</div>` : '';
+}
+function esc(s){ return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+async function api(path, body){
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body||{})});
+  const j = await r.json();
+  if(j && j.error){ throw new Error(j.error); }
+  return j;
+}
+function show(id, on){ document.getElementById(id).classList.toggle('hidden', !on); }
+
+/* ---------- STEP 1: drives ---------- */
+async function loadDrives(){
+  showErr('');
+  const el = document.getElementById('drive-list');
+  el.innerHTML = '<span class="spinner"></span>';
+  try {
+    const drives = await api('/api/drives',{});
+    if(!drives.length){ el.innerHTML = '<span class="muted">No optical drives found.</span>'; return; }
+    el.innerHTML = '';
+    drives.forEach(d => {
+      const c = document.createElement('span');
+      c.className = 'card' + (state.drive===d.index?' sel':'');
+      c.style.padding='6px 10px';
+      c.innerHTML = `<b>[${d.index}]</b> ${esc(d.name)} ` +
+        (d.loaded ? `<span class="pill ok">${esc(d.label||'disc')}</span>` : '<span class="pill short">empty</span>');
+      c.onclick = () => { state.drive = d.index;
+        document.getElementById('scan-btn').disabled = false; loadDrivesHighlight(); };
+      el.appendChild(c);
+    });
+  } catch(e){ showErr(e.message); el.innerHTML=''; }
+}
+function loadDrivesHighlight(){
+  [...document.querySelectorAll('#drive-list .card')].forEach((c,i)=>{});
+  loadDrives();
+}
+
+/* ---------- STEP 2: scan + identify ---------- */
+async function scan(){
+  showErr('');
+  const st = document.getElementById('scan-status');
+  st.innerHTML = '<span class="spinner"></span> scanning disc… (up to ~2 min; will abort if the disc is unreadable)';
+  document.getElementById('scan-btn').disabled = true;
+  try {
+    const s = await api('/api/scan', {drive: state.drive});
+    state.titles = s.titles;
+    state.titleById = {}; s.titles.forEach(t=>state.titleById[t.id]=t);
+    st.innerHTML = `Found <b>${s.titles.length}</b> titles.`;
+    document.getElementById('disc-label').textContent = s.label || '(no label)';
+    document.getElementById('q').value = s.query || '';
+    state.kind = s.type;
+    document.querySelector(`input[name=kind][value=${s.type}]`).checked = true;
+    if(s.hints && s.hints.season) document.getElementById('season').value = s.hints.season;
+    onKind();
+    show('s-id', true);
+    document.getElementById('s-id').scrollIntoView({behavior:'smooth'});
+    search();
+  } catch(e){ showErr(e.message); st.textContent=''; }
+  document.getElementById('scan-btn').disabled = false;
+}
+function onKind(){
+  state.kind = document.querySelector('input[name=kind]:checked').value;
+  show('tv-season-wrap', state.kind==='tv');
+}
+async function search(){
+  showErr('');
+  const res = document.getElementById('results');
+  res.innerHTML = '<span class="spinner"></span>';
+  try {
+    const results = await api('/api/search',
+      {kind:state.kind, query:document.getElementById('q').value,
+       year:document.getElementById('q-year').value||null});
+    if(!results.length){ res.innerHTML='<span class="muted">No matches.</span>'; return; }
+    res.innerHTML='';
+    results.forEach(r => {
+      const c = document.createElement('div');
+      c.className='card';
+      c.innerHTML = `<div class="row" style="justify-content:space-between">
+        <b>${esc(r.name)} <span class="muted">(${r.year||'----'})</span></b>
+        <span class="muted">tmdb:${r.id}</span></div>
+        <div class="muted" style="margin-top:4px">${esc((r.overview||'').slice(0,150))}</div>`;
+      c.onclick = () => selectMatch(r.id, c);
+      res.appendChild(c);
+    });
+  } catch(e){ showErr(e.message); res.innerHTML=''; }
+}
+async function selectMatch(id){
+  showErr('');
+  state.selId = id;
+  await reselect();
+  document.querySelectorAll('#results .card').forEach(c=>c.classList.remove('sel'));
+}
+async function reselect(){
+  if(state.selId==null) return;
+  try {
+    const sel = await api('/api/select',
+      {kind:state.kind, id:state.selId, season:document.getElementById('season').value});
+    state.sel = sel;
+    if(sel.kind==='tv'){ renderMatch(); show('s-match',true); show('s-movie',false);
+      document.getElementById('s-match').scrollIntoView({behavior:'smooth'}); }
+    else { renderMovie(); show('s-movie',true); show('s-match',false);
+      document.getElementById('s-movie').scrollIntoView({behavior:'smooth'}); }
+  } catch(e){ showErr(e.message); }
+}
+
+/* ---------- STEP 3: TV matching board ---------- */
+function bucketPill(b){
+  if(b==='duplicate') return '<span class="pill dup">dup</span>';
+  if(b==='playall') return '<span class="pill playall">play-all</span>';
+  if(b==='short') return '<span class="pill short">extra</span>';
+  return '';
+}
+function titleChipHTML(t){
+  return `<span class="mono">t${String(t.id).padStart(2,'0')}</span>
+    <b>${t.hms}</b> <span class="muted">${esc(t.resolution)}</span> ${bucketPill(t.bucket)}`;
+}
+function autoMap(){
+  state.assign = {};
+  (state.sel.suggested||[]).forEach(s => { state.assign[s.episode] = s.title_id; });
+  renderMatch();
+}
+function clearMap(){ state.assign = {}; renderMatch(); }
+function renderMatch(){
+  const sel = state.sel;
+  document.getElementById('ep-head').textContent =
+    `${sel.title} (${sel.year}) — Season ${sel.season}`;
+  document.getElementById('autostart').textContent = sel.suggestedStart;
+  // banner
+  let b='';
+  const overrun = Object.keys(state.assign).map(Number).filter(n=>n>sel.seasonCount).length;
+  if(sel.existing && sel.existing.length)
+    b += `<div class="banner warn">This season already has ${sel.existing.length} episode(s) on the NAS `+
+         `(through e${String(Math.max(...sel.existing)).padStart(2,'0')}). Auto-map starts at `+
+         `<b>e${String(sel.suggestedStart).padStart(2,'0')}</b>.</div>`;
+  document.getElementById('match-banner').innerHTML = b;
+  if(Object.keys(state.assign).length===0) autoMapSilent();
+  renderPool(); renderEpisodes();
+}
+function autoMapSilent(){ (state.sel.suggested||[]).forEach(s=>{ state.assign[s.episode]=s.title_id; }); }
+function assignedTitleIds(){ return new Set(Object.values(state.assign).map(Number)); }
+function renderPool(){
+  const used = assignedTitleIds();
+  const pool = document.getElementById('pool');
+  const free = state.titles.filter(t=>!used.has(t.id));
+  document.getElementById('pool-count').textContent = `(${free.length} unassigned)`;
+  pool.innerHTML='';
+  free.forEach(t=>{
+    const el=document.createElement('div');
+    el.className='title-chip'; el.draggable=true; el.dataset.tid=t.id;
+    el.innerHTML=titleChipHTML(t);
+    el.ondragstart=e=>e.dataTransfer.setData('tid', t.id);
+    pool.appendChild(el);
+  });
+  pool.ondragover=e=>{e.preventDefault(); pool.classList.add('drag');};
+  pool.ondragleave=()=>pool.classList.remove('drag');
+  pool.ondrop=e=>{e.preventDefault(); pool.classList.remove('drag');
+    const tid=+e.dataTransfer.getData('tid'); unassign(tid); };
+}
+function unassign(tid){
+  for(const ep of Object.keys(state.assign)) if(+state.assign[ep]===tid) delete state.assign[ep];
+  renderPool(); renderEpisodes();
+}
+function renderEpisodes(){
+  const sel=state.sel, host=document.getElementById('episodes'); host.innerHTML='';
+  // show season episodes, plus any assigned episode numbers beyond the season list
+  const nums = sel.episodes.map(e=>e.number);
+  const extra = Object.keys(state.assign).map(Number).filter(n=>!nums.includes(n)).sort((a,b)=>a-b);
+  const rows = [...sel.episodes, ...extra.map(n=>({number:n,name:'',air:'',runtime:null,overview:'',exists:false}))];
+  rows.forEach(ep=>{
+    const row=document.createElement('div'); row.className='ep'; row.dataset.ep=ep.number;
+    const tid=state.assign[ep.number];
+    const t = tid!=null ? state.titleById[tid] : null;
+    let match='';
+    if(t && ep.runtime){ const d=t.duration-ep.runtime*60;
+      match = Math.abs(d)>6*60 ? `<span class="pill warn">Δ${d>0?'+':''}${Math.round(d/60)}m</span>`
+                               : `<span class="pill ok">✓</span>`; }
+    row.innerHTML = `
+      <div class="epnum">s${String(sel.season).padStart(2,'0')}e${String(ep.number).padStart(2,'0')}</div>
+      <div class="epname">
+        <div class="nm">${esc(ep.name)||'<span class="muted">(no TMDB data)</span>'}
+          ${ep.exists?'<span class="pill nas">on NAS</span>':''} ${match}</div>
+        <div class="meta">${ep.air||''}${ep.runtime?' · TMDB '+ep.runtime+'m':''}</div>
+      </div>
+      <div class="slot"></div>`;
+    const slot=row.querySelector('.slot');
+    if(t){
+      const a=document.createElement('div'); a.className='assigned'; a.draggable=true;
+      a.dataset.tid=t.id; a.innerHTML=`${titleChipHTML(t)}<span class="x" title="unassign">✕</span>`;
+      a.ondragstart=e=>e.dataTransfer.setData('tid', t.id);
+      a.querySelector('.x').onclick=()=>unassign(t.id);
+      slot.appendChild(a);
+    } else {
+      slot.innerHTML='<div class="slot-empty">drop title here</div>';
+    }
+    row.ondragover=e=>{e.preventDefault(); row.classList.add('drop');};
+    row.ondragleave=()=>row.classList.remove('drop');
+    row.ondrop=e=>{e.preventDefault(); row.classList.remove('drop');
+      const dtid=+e.dataTransfer.getData('tid'); assignTo(ep.number, dtid); };
+    host.appendChild(row);
+  });
+}
+function assignTo(epNumber, tid){
+  // remove tid from any other episode, then place
+  for(const ep of Object.keys(state.assign)) if(+state.assign[ep]===tid) delete state.assign[ep];
+  state.assign[epNumber]=tid;
+  renderPool(); renderEpisodes();
+}
+
+/* ---------- STEP 3b: movie ---------- */
+function renderMovie(){
+  const s=state.sel;
+  document.getElementById('movie-body').innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <b style="font-size:15px">${esc(s.title)} <span class="muted">(${s.year})</span></b>
+      <span class="muted">imdb-${s.imdb||'?'}</span></div>
+    <div style="margin:8px 0" class="muted">Main title t${String(s.mainTitleId).padStart(2,'0')} ·
+      TMDB runtime ${s.runtime}m ${s.exists?'<span class="pill nas">file already on NAS</span>':''}</div>
+    <div>→ <code>${esc(s.target)}</code></div>`;
+}
+
+/* ---------- STEP 4: rip ---------- */
+function currentAssignments(){
+  return Object.keys(state.assign).map(ep=>({episode:+ep, title_id:+state.assign[ep]}))
+    .sort((a,b)=>a.episode-b.episode);
+}
+async function goRip(){
+  showErr('');
+  let preview;
+  try {
+    if(state.kind==='movie'){ preview = await api('/api/preview',{kind:'movie'}); }
+    else { preview = await api('/api/preview',{kind:'tv', assignments:currentAssignments()}); }
+  } catch(e){ return showErr(e.message); }
+  const host=document.getElementById('rip-preview');
+  if(!preview.length){ host.innerHTML='<div class="banner warn">Nothing assigned to rip.</div>'; }
+  else {
+    const skip = preview.filter(p=>p.exists).length;
+    host.innerHTML = (skip?`<div class="banner warn">${skip} target(s) already exist and will be skipped.</div>`:'')
+      + preview.map(p=>`<div class="riprow">${p.episode?('s'+String(state.sel.season).padStart(2,'0')+'e'+String(p.episode).padStart(2,'0')+' '):''}
+        → <code>${esc(p.target.split('\\').pop())}</code> ${p.exists?'<span class="pill nas">skip</span>':''}</div>`).join('');
+  }
+  show('s-rip',true);
+  document.getElementById('s-rip').scrollIntoView({behavior:'smooth'});
+}
+async function startRip(){
+  showErr('');
+  document.getElementById('rip-btn').disabled=true;
+  document.getElementById('rip-note').innerHTML='<span class="spinner"></span> ripping…';
+  try {
+    const body = state.kind==='movie' ? {kind:'movie'} : {kind:'tv', assignments:currentAssignments()};
+    await api('/api/rip', body);
+    pollStatus();
+  } catch(e){ showErr(e.message); document.getElementById('rip-btn').disabled=false; }
+}
+async function pollStatus(){
+  try {
+    const r = await fetch('/api/rip/status'); const job = await r.json();
+    const host=document.getElementById('rip-progress');
+    host.innerHTML = (job.items||[]).map(it=>{
+      const color = it.status==='done'?'var(--good)':it.status==='failed'||it.status==='stalled'?'var(--bad)':
+                    it.status==='skipped'?'var(--dim)':'var(--accent)';
+      return `<div class="riprow">
+        <div class="row" style="justify-content:space-between">
+          <span>${esc(it.label||('t'+it.title_id))}</span>
+          <span class="muted">${it.status} ${it.status==='ripping'?it.pct+'%':''}</span></div>
+        <div class="bar"><div style="width:${it.pct}%;background:${color}"></div></div></div>`;
+    }).join('');
+    if(job.error) showErr(job.error);
+    if(job.running){ setTimeout(pollStatus, 800); }
+    else {
+      document.getElementById('rip-btn').disabled=false;
+      const done=(job.items||[]).filter(i=>i.status==='done').length;
+      document.getElementById('rip-note').innerHTML =
+        `<span class="pill ok">finished</span> ${done} ripped`;
+    }
+  } catch(e){ setTimeout(pollStatus, 1200); }
+}
+
+loadDrives();
+</script>
+</body>
+</html>

@@ -15,6 +15,37 @@ runtime cross-check (`✓` / `⚠`) against TMDB — so you can approve or corre
 plan **without opening any video files**. Nothing is ripped or moved until you
 confirm.
 
+## Two ways to use it
+
+- **Web UI (recommended for TV):** `py webapp.py` — opens a browser page where you
+  pick a drive, scan, and **drag disc titles onto episodes** in a table, then rip
+  with live progress. Best for messy discs (duplicate playlists, multi-disc sets).
+- **CLI:** `py diskrip.py` — the same engine as a terminal confirm-screen. Good for
+  quick movie rips and unattended (`--yes`) runs.
+
+Both share `diskrip.py`, `config.json`, and identical naming/dedup logic.
+
+## Web UI
+
+```powershell
+py webapp.py            # opens http://127.0.0.1:8765 in your browser
+py webapp.py --port 9000 --no-browser
+```
+
+Flow: **Disc** (pick drive → Scan) → **Identify** (search TMDB, pick the right
+match — e.g. 2005 vs 2024) → **Match** → **Rip**.
+
+On the Match board, disc titles are draggable cards on the left (badged
+`dup` / `play-all` / `extra` so you can see what's real), and the season's
+episodes are drop targets on the right. It auto-maps to the first unripped
+episode; drag any title onto a different episode to correct it, drag it back to
+the pool to skip it. Episodes already on the NAS are badged and never
+overwritten. Runtime mismatches show a `Δ` badge per row. Then **Review & rip**
+shows the exact target files and rips with a progress bar each.
+
+The server is local-only (`127.0.0.1`) and single-user. Keep the terminal open
+while using it; Ctrl+C stops it.
+
 ## Requirements
 
 - **Windows** with **MakeMKV** installed (uses `makemkvcon64.exe`).
