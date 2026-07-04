@@ -54,10 +54,25 @@ while using it; Ctrl+C stops it.
 
 ## Setup
 
-1. `config.json` is already created with your TMDB key and NAS paths. If you ever
-   need to recreate it, copy `config.example.json` to `config.json` and fill in
-   `tmdb_api_key`.
-2. Check the paths in `config.json` (see **Config** below).
+### Quick setup (recommended)
+
+Double-click **`setup.cmd`** (or run `powershell -ExecutionPolicy Bypass -File setup.ps1`).
+It uses **winget** to install the prerequisites (Python, MakeMKV, and the
+libbluray-enabled ffmpeg), finds their executables, asks for your TMDB key and
+library paths, writes `config.json`, and verifies everything works. Re-running is
+safe — your existing values become the defaults.
+
+The one step it can't do for you: **register MakeMKV.** MakeMKV needs a paid
+license or the free beta key (rotates monthly, posted on the MakeMKV forum). The
+script offers to apply a key you paste; otherwise open the MakeMKV app once and
+enter it there.
+
+### Manual setup
+
+1. Install [MakeMKV](https://www.makemkv.com/), [Python 3.9+](https://python.org),
+   and (for thumbnails) an ffmpeg build with libbluray (`winget install Gyan.FFmpeg`).
+2. Copy `config.example.json` to `config.json`, fill in `tmdb_api_key`, and set the
+   `makemkvcon` / `ffmpeg` paths and your `tv_root` / `movie_root` (see **Config**).
 
 ## Usage
 

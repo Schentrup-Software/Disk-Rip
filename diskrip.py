@@ -1256,7 +1256,9 @@ def load_config(path):
     if not p.exists():
         die(f"Config not found: {path}\n"
             "Copy config.example.json to config.json and fill in your TMDB key.")
-    cfg = json.loads(p.read_text(encoding="utf-8"))
+    # utf-8-sig tolerates a byte-order mark, which Windows editors (Notepad,
+    # PowerShell's Set-Content) prepend and which would otherwise break json.loads.
+    cfg = json.loads(p.read_text(encoding="utf-8-sig"))
     if "PASTE_YOUR" in cfg.get("tmdb_api_key", ""):
         die("Set 'tmdb_api_key' in your config (free key from themoviedb.org).")
     Path(cfg["work_dir"]).mkdir(parents=True, exist_ok=True)
