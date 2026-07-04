@@ -1,9 +1,9 @@
 {
   "tmdb_api_key": "PASTE_YOUR_TMDB_V3_API_KEY_HERE",
   "makemkvcon": "C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe",
-  "tv_root": "\\\\NAS\\public\\media\\tv",
-  "movie_root": "\\\\NAS\\public\\media\\movies",
-  "work_dir": "C:\\Users\\j03y\\Documents\\source\\Disk-Rip\\_work",
+  "tv_root": "\\\\SERVER\\media\\tv",
+  "movie_root": "\\\\SERVER\\media\\movies",
+  "work_dir": "C:\\Disk-Rip\\_work",
   "min_length_minutes": 15,
   "movie_min_minutes": 70,
   "language": "en",

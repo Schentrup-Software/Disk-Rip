@@ -9,7 +9,7 @@
 
   Unattended / re-run with values supplied:
     powershell -ExecutionPolicy Bypass -File setup.ps1 -TmdbKey abc123 `
-        -TvRoot \\NAS\public\media\tv -MovieRoot \\NAS\public\media\movies
+        -TvRoot \\SERVER\media\tv -MovieRoot \\SERVER\media\movies
 
   Re-running is safe: existing config.json values are used as the defaults.
 #>

@@ -1,3 +1,14 @@
-__pycache__
-_work
+# Personal config (holds your TMDB key + library paths) — never commit
 config.json
+
+# Local scratch / ripped-in-progress files and thumbnail cache
+_work
+**/thumbs/
+
+# Python
+__pycache__
+*.pyc
+
+# MakeMKV libmmbd copied in next to ffmpeg for AACS (regenerated automatically)
+libaacs.dll
+libbdplus.dll
