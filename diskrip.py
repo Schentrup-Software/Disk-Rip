@@ -46,9 +46,10 @@ AP_NAME = 2
 AP_CHAPTER_COUNT = 8
 AP_DURATION = 9
 AP_SOURCE_FILENAME = 16
+AP_VIDEO_SIZE = 19
+AP_SEGMENTS_MAP = 26
 AP_OUTPUT_FILENAME = 27
 AP_VOLUME_NAME = 32
-AP_VIDEO_SIZE = 19
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,7 @@ class Title:
         self.source = ""             # e.g. 00800.mpls
         self.output_name = ""        # name MakeMKV will write, e.g. LABEL_t00.mkv
         self.resolution = ""         # e.g. 1920x1080
+        self.segmap = ""             # segment map, e.g. "1,2,3" - fingerprints content
         # Assignment decided during confirmation:
         self.assign = None           # dict describing what to do, or None = skip
 
@@ -302,6 +304,8 @@ class MakeMKV:
                     t.chapters = int(val) if val.isdigit() else 0
                 elif aid == AP_SOURCE_FILENAME:
                     t.source = val
+                elif aid == AP_SEGMENTS_MAP:
+                    t.segmap = val
                 elif aid == AP_OUTPUT_FILENAME:
                     t.output_name = val
             elif ln.startswith("SINFO:"):
@@ -533,11 +537,12 @@ class MovieProposal:
 
 
 class TvProposal:
-    def __init__(self, tmdb, disc, min_len_sec, movie_min_sec):
+    def __init__(self, tmdb, disc, min_len_sec, movie_min_sec, tv_root):
         self.tmdb = tmdb
         self.disc = disc
         self.min_len_sec = min_len_sec
         self.movie_min_sec = movie_min_sec
+        self.tv_root = tv_root
         self.details = None
         self.season_number = 1
         self.start_episode = 1
@@ -545,15 +550,56 @@ class TvProposal:
         self.skip = set()            # title ids the user chose to drop
         self.force_include = set()   # title ids force-added back from excluded
 
-    # --- title buckets -----------------------------------------------------
-    def episode_titles(self):
-        """Episode-length titles: long enough, but shorter than a feature.
+    # --- awareness of what is already on the NAS ---------------------------
+    def season_dir(self):
+        return Path(self.tv_root) / self.show_folder() / f"Season {self.season_number}"
 
-        The upper bound (movie_min_sec) filters out 'Play All' titles - the
-        multi-hour concatenation of every episode that TV discs include and
-        that must never be ripped as a single episode."""
+    def existing_episodes(self):
+        """Episode numbers already present in the season folder on the NAS."""
+        found = set()
+        d = self.season_dir()
+        try:
+            entries = list(d.glob("*.mkv"))
+        except OSError:
+            return found
+        for f in entries:
+            m = re.search(rf"s{self.season_number:02d}e(\d{{2,3}})", f.name, re.I)
+            if m:
+                found.add(int(m.group(1)))
+        return found
+
+    def suggested_start(self):
+        """Continue after the highest episode already on the NAS, if any."""
+        existing = self.existing_episodes()
+        return max(existing) + 1 if existing else 1
+
+    # --- title buckets -----------------------------------------------------
+    def _length_bucket(self):
+        """Titles in the episode length range (excludes shorts and Play-Alls)."""
         return [t for t in self.disc.titles
                 if self.min_len_sec <= t.duration < self.movie_min_sec]
+
+    def duplicate_ids(self):
+        """Title ids that are duplicate playlists of an earlier title.
+
+        TV Blu-rays routinely list each episode as several playlists that share
+        the same underlying video segments. Titles with an identical segment map
+        are the same content; we keep the first and treat the rest as duplicates,
+        so a 20-episode season doesn't get ripped as 40 files."""
+        dups, seen = set(), {}
+        for t in sorted(self._length_bucket(), key=lambda t: t.id):
+            if not t.segmap:
+                continue  # single-segment titles have no map; never merge blindly
+            if t.segmap in seen:
+                dups.add(t.id)
+            else:
+                seen[t.segmap] = t.id
+        return dups
+
+    def episode_titles(self):
+        """Episode-length titles, de-duplicated by segment map."""
+        dups = self.duplicate_ids()
+        return [t for t in self._length_bucket() if t.id not in dups]
 
     def excluded_long(self):
         """Play-all / feature-length titles, excluded by default."""
@@ -562,6 +608,15 @@ class TvProposal:
     def excluded_short(self):
         """Sub-threshold titles (extras, menus, recaps), excluded by default."""
         return [t for t in self.disc.titles if t.duration < self.min_len_sec]
+
+    def excluded_duplicates(self):
+        """Duplicate-playlist titles, excluded by default."""
+        dups = self.duplicate_ids()
+        return [t for t in self._length_bucket() if t.id in dups]
+
+    def season_episode_count(self):
+        """How many episodes TMDB lists for this season (0 if unknown)."""
+        return len(self.episodes)
 
     def active_titles(self):
         """The titles that will actually be ripped, in disc order."""
@@ -704,9 +759,11 @@ def show_tv_proposal(p):
     if not p.episodes:
         print(yellow("  ! No TMDB episode data for this season "
                      "(runtimes/titles unavailable) - mapping by disc order only."))
+    existing = p.existing_episodes()
     print()
     print(f"  {'title':<6}{'length':<9}{'res':<11}{'ep':<7}{'name / air / TMDB-runtime'}")
     print(f"  {dim('-' * 62)}")
+    collisions = 0
     for t, ep in p.plan():
         epnum = ep.get("episode_number")
         epname = ep.get("name") or ""
@@ -721,6 +778,9 @@ def show_tv_proposal(p):
             else:
                 note = green("✓")
             note += dim(f" TMDB {rt}m")
+        if epnum in existing:
+            collisions += 1
+            note += red("  ● already on NAS (will skip)")
         eplabel = f"s{p.season_number:02d}e{epnum:02d}"
         namecell = f"{epname[:34]:<34}"  # pad plain text first, color after
         print(f"  t{t.id:02d}   {hms(t.duration):<9}{(t.resolution or '?'):<11}"
@@ -728,12 +788,29 @@ def show_tv_proposal(p):
         overview = (ep.get("overview") or "").strip()
         if overview:
             print(f"         {dim(overview[:96] + ('...' if len(overview) > 96 else ''))}")
+    # Warn loudly if this plan would collide with episodes already ripped -
+    # the classic "next disc in the set restarted at e01" mistake.
+    total = len(p.plan())
+    if collisions and total:
+        sug = p.suggested_start()
+        print(red(f"\n  ⚠ {collisions} of {total} mapped episodes already exist on the NAS."))
+        if collisions >= total // 2 and sug > p.start_episode:
+            print(yellow(f"    This looks like a continuation disc numbered from e01. "
+                         f"If so, set the start: {bold('start ' + str(sug))}"))
+        else:
+            print(dim("    (Existing files are left untouched. That's fine if you're re-ripping.)"))
     # Excluded titles - shown so the user can 'keep' one if the guess is wrong
     long_ex = [t for t in p.excluded_long() if t.id not in p.force_include]
     if long_ex:
         print(yellow(f"\n  Excluded {len(long_ex)} feature-length title(s) "
                      f"(≥ {p.movie_min_sec//60}m — almost certainly 'Play All'): "
                      + ", ".join(f"t{t.id:02d}={hms(t.duration)}" for t in long_ex)))
+    dup_ex = [t for t in p.excluded_duplicates() if t.id not in p.force_include]
+    if dup_ex:
+        print(yellow(f"  Excluded {len(dup_ex)} duplicate playlist(s) "
+                     f"(same video as an earlier title — Blu-ray lists episodes "
+                     f"more than once): "
+                     + ", ".join(f"t{t.id:02d}={hms(t.duration)}" for t in dup_ex)))
     short_ex = [t for t in p.excluded_short()]
     if short_ex:
         print(dim(f"  Excluded {len(short_ex)} short title(s) "
@@ -741,6 +818,17 @@ def show_tv_proposal(p):
                   + ", ".join(f"t{t.id:02d}={hms(t.duration)}" for t in short_ex)))
     if p.skip:
         print(dim("  User-skipped: " + ", ".join(f"t{i:02d}" for i in sorted(p.skip))))
+    # Backstop: if the mapping runs past the season's real episode count, the
+    # disc almost certainly still has duplicates/oddities we didn't catch.
+    plan = p.plan()
+    ep_count = p.season_episode_count()
+    if ep_count and plan:
+        max_ep = max(ep.get("episode_number", 0) for _, ep in plan)
+        if max_ep > ep_count:
+            print(red(f"\n  ⚠ Plan maps up to e{max_ep:02d} but this season only has "
+                      f"{ep_count} episodes. The disc likely still contains "
+                      f"duplicate/alternate titles — verify before ripping, and "
+                      f"'skip' the extras."))
 
 
 # ---------------------------------------------------------------------------
@@ -1027,7 +1115,7 @@ def main():
         execute_movie(mk, p, cfg, args.dry_run)
 
     else:
-        p = TvProposal(tmdb, disc, min_len, movie_min)
+        p = TvProposal(tmdb, disc, min_len, movie_min, cfg["tv_root"])
         p.season_number = args.season or hints.get("season") or 1
         p.start_episode = args.start_episode or 1
         results = p.identify(query) if query else []
@@ -1038,6 +1126,16 @@ def main():
             die("No TMDB show matches. Re-run with --title \"Exact Name\".")
         p.choose(initial_pick(p, results, "tv", not args.yes)["id"])
         p.load_season()
+        # Continuation-disc awareness: if episodes are already on the NAS and the
+        # user didn't pin a start, resume after the last one instead of colliding
+        # from e01. Announced, and overridable with 'start <n>' at the prompt.
+        if args.start_episode is None:
+            sug = p.suggested_start()
+            if sug > 1:
+                p.start_episode = sug
+                print(yellow(f"Found episodes through e{sug-1:02d} already on the NAS "
+                             f"— starting this disc at e{sug:02d} "
+                             f"{dim('(override with start <n>)')}"))
         if not args.yes:
             if not edit_tv(p):
                 print("Aborted."); return

@@ -89,8 +89,32 @@ Interactive commands:
    feature ⇒ movie; several ~20–60 min titles ⇒ TV). Override with `--type`.
 4. **Episode mapping** — episode-length titles are mapped in disc order to
    sequential episodes, with each title's runtime cross-checked against the
-   TMDB episode runtime. **"Play All" titles (multi-hour concatenations) and
-   short extras/menus are excluded automatically.**
+   TMDB episode runtime. Automatically excluded:
+   - **"Play All" titles** (multi-hour concatenations of every episode),
+   - **short extras/menus**, and
+   - **duplicate playlists** — Blu-rays routinely list each episode as several
+     titles that share the same video segments; titles with an identical segment
+     map are de-duplicated so a 20-episode season isn't ripped as 40 files.
+
+### Multi-disc sets (continuation awareness)
+
+For a season spanning several discs, the script looks at what's already in the
+season folder on the NAS and **resumes numbering after the last episode you
+ripped** — insert Disc 2 and it starts at e17 instead of colliding with Disc 1's
+e01. It also:
+
+- marks every planned episode that **already exists on the NAS** (`● already on
+  NAS (will skip)`) so a collision is obvious *before* ripping,
+- never overwrites an existing file, and
+- warns if the plan maps **past the season's real episode count** (a sign the
+  disc still has duplicate/alternate titles to `skip`).
+
+Override the start any time with `start <n>` at the prompt (or `--start-episode`).
+
+> **Uniform-runtime shows** (e.g. all ~24 min): the runtime `✓` check can't tell
+> episodes apart, so mapping relies on disc order + the start episode. Glance at
+> the episode names/plots and the "already on NAS" markers to confirm the disc's
+> position in the season before approving.
 
 If a disc label is generic (`LOGICAL_VOLUME_ID`), the script asks you to type
 the title, or pass `--title`.
