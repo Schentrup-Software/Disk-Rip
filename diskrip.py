@@ -27,6 +27,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import Counter
 from pathlib import Path
 
 # Windows console: force UTF-8 so the ✓/⚠/Δ symbols don't crash cp1252, and
@@ -632,6 +633,61 @@ class TvProposal:
                 out.add(int(x))
         return out
 
+    @staticmethod
+    def _res_area(res):
+        m = re.match(r"(\d+)x(\d+)", res or "")
+        return int(m.group(1)) * int(m.group(2)) if m else 0
+
+    def _playall_titles(self):
+        return [t for t in self.disc.titles if t.duration >= self.movie_min_sec]
+
+    def _playall_order(self):
+        """The ordered segment list of the Play-All title - the disc's own
+        canonical episode order. Returns [seg_id, ...] or None if no multi-segment
+        Play-All exists. The Play-All concatenates every episode in broadcast
+        order, so a title's position in this list = its episode order."""
+        longs = self._playall_titles()
+        if not longs:
+            return None
+        ref = max(longs, key=lambda t: len(self._segset(t)))
+        seq = [int(x) for x in (ref.segmap or "").split(",") if x.strip().isdigit()]
+        return seq if len(seq) >= 2 else None
+
+    def _episode_resolution(self):
+        """Modal resolution of the real episodes (those present in the Play-All,
+        else all length-bucket titles). Lower-res titles are treated as extras."""
+        pool = self._length_bucket()
+        order = self._playall_order()
+        if order:
+            oset = set(order)
+            in_pa = [t for t in pool if self._segset(t) & oset]
+            if in_pa:
+                pool = in_pa
+        res = [t.resolution for t in pool if t.resolution]
+        return Counter(res).most_common(1)[0][0] if res else None
+
+    def _excluded_reasons(self):
+        """Length-bucket titles that are NOT real episodes, with why:
+          'lowres'       - lower resolution than the episodes (SD extra), and
+          'notinplayall' - content not part of the Play-All (bonus/alt feature).
+        These filters only apply when the relevant signal exists on the disc."""
+        epres = self._episode_resolution()
+        ep_area = self._res_area(epres) if epres else 0
+        order = self._playall_order()
+        oset = set(order) if order else None
+        reasons = {}
+        for t in self._length_bucket():
+            if epres and self._res_area(t.resolution) < ep_area:
+                reasons[t.id] = "lowres"
+            elif oset is not None and self._segset(t) and not (self._segset(t) & oset):
+                reasons[t.id] = "notinplayall"
+        return reasons
+
+    def _episode_candidates(self):
+        """Length-bucket titles that are real episodes (after res/Play-All filters)."""
+        reasons = self._excluded_reasons()
+        return [t for t in self._length_bucket() if t.id not in reasons]
+
     def _overlap_groups(self):
         """Group length-bucket titles that are the same episode.
 
@@ -644,7 +700,7 @@ class TvProposal:
 
         Returns a list of groups; each group is a list of Titles sorted so the
         representative (the version we keep) is first."""
-        titles = sorted(self._length_bucket(), key=lambda t: t.id)
+        titles = sorted(self._episode_candidates(), key=lambda t: t.id)
         parent = {t.id: t.id for t in titles}
 
         def find(a):
@@ -711,15 +767,40 @@ class TvProposal:
                 out[t.id] = rep
         return out
 
+    def _ordered_reps(self):
+        """Representatives (one per episode) in true broadcast order.
+
+        Uses the Play-All's segment sequence: each rep is placed at the position
+        of its first *distinctive* segment (segments shared by every rep - a
+        common intro/recap - are ignored). Falls back to title-id order when the
+        disc has no Play-All."""
+        reps = [g[0] for g in self._overlap_groups()]
+        order = self._playall_order()
+        if not order:
+            return sorted(reps, key=lambda t: t.id)
+        pos = {seg: i for i, seg in enumerate(order)}
+        shared = Counter()
+        for t in reps:
+            for s in self._segset(t):
+                shared[s] += 1
+
+        def sort_key(t):
+            segs = self._segset(t)
+            distinctive = [pos[s] for s in segs if s in pos and shared[s] == 1]
+            fallback = [pos[s] for s in segs if s in pos]
+            picks = distinctive or fallback
+            return (min(picks) if picks else 10 ** 9, t.id)
+
+        return sorted(reps, key=sort_key)
+
     def duplicate_ids(self):
         """Title ids that are duplicate playlists of another (non-reps)."""
         reps = self.representative_ids()
-        return {t.id for t in self._length_bucket() if t.id not in reps}
+        return {t.id for t in self._episode_candidates() if t.id not in reps}
 
     def episode_titles(self):
-        """Episode-length titles, de-duplicated by segment map."""
-        dups = self.duplicate_ids()
-        return [t for t in self._length_bucket() if t.id not in dups]
+        """Real episode titles, de-duplicated, in broadcast (Play-All) order."""
+        return list(self._ordered_reps())
 
     def excluded_long(self):
         """Play-all / feature-length titles, excluded by default."""
@@ -732,19 +813,31 @@ class TvProposal:
     def excluded_duplicates(self):
         """Duplicate-playlist titles, excluded by default."""
         dups = self.duplicate_ids()
-        return [t for t in self._length_bucket() if t.id in dups]
+        return [t for t in self._episode_candidates() if t.id in dups]
+
+    def excluded_lowres(self):
+        """Episode-length titles at a lower resolution than the episodes (extras)."""
+        r = self._excluded_reasons()
+        return [t for t in self._length_bucket() if r.get(t.id) == "lowres"]
+
+    def excluded_notinplayall(self):
+        """Episode-length titles whose content isn't in the Play-All (bonus feature)."""
+        r = self._excluded_reasons()
+        return [t for t in self._length_bucket() if r.get(t.id) == "notinplayall"]
 
     def season_episode_count(self):
         """How many episodes TMDB lists for this season (0 if unknown)."""
         return len(self.episodes)
 
     def active_titles(self):
-        """The titles that will actually be ripped, in disc order."""
-        pool = {t.id: t for t in self.episode_titles()}
-        for t in self.disc.titles:
-            if t.id in self.force_include:
-                pool[t.id] = t
-        return [t for tid, t in sorted(pool.items()) if tid not in self.skip]
+        """The titles that will actually be ripped, in broadcast order."""
+        ordered = [t for t in self._ordered_reps() if t.id not in self.skip]
+        have = {t.id for t in ordered}
+        for t in self.disc.titles:  # force-included extras append after the episodes
+            if t.id in self.force_include and t.id not in have and t.id not in self.skip:
+                ordered.append(t)
+                have.add(t.id)
+        return ordered
 
     def identify(self, query, year=None):
         return self.tmdb.search_tv(query, year)
@@ -931,6 +1024,16 @@ def show_tv_proposal(p):
                      f"(same video as an earlier title — Blu-ray lists episodes "
                      f"more than once): "
                      + ", ".join(f"t{t.id:02d}={hms(t.duration)}" for t in dup_ex)))
+    lowres_ex = [t for t in p.excluded_lowres() if t.id not in p.force_include]
+    if lowres_ex:
+        print(yellow(f"  Excluded {len(lowres_ex)} lower-resolution title(s) "
+                     f"(SD among HD episodes — likely extras): "
+                     + ", ".join(f"t{t.id:02d}={t.resolution}" for t in lowres_ex)))
+    notpa_ex = [t for t in p.excluded_notinplayall() if t.id not in p.force_include]
+    if notpa_ex:
+        print(yellow(f"  Excluded {len(notpa_ex)} title(s) not in the Play-All "
+                     f"(content the disc doesn't count as an episode): "
+                     + ", ".join(f"t{t.id:02d}={hms(t.duration)}" for t in notpa_ex)))
     short_ex = [t for t in p.excluded_short()]
     if short_ex:
         print(dim(f"  Excluded {len(short_ex)} short title(s) "

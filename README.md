@@ -118,11 +118,19 @@ Interactive commands:
    disambiguates remakes).
 3. **Movie vs TV** — auto-detected from title count and durations (one long
    feature ⇒ movie; several ~20–60 min titles ⇒ TV). Override with `--type`.
-4. **Episode mapping** — episode-length titles are mapped in disc order to
-   sequential episodes, with each title's runtime cross-checked against the
-   TMDB episode runtime. Automatically excluded:
+4. **Episode mapping** — episode-length titles are mapped to sequential
+   episodes. **Order comes from the Play-All title**, not the raw title numbers:
+   the Play-All lists every episode's segments in broadcast order, so each
+   episode is placed by where its segments appear in that sequence (disc title
+   order often does *not* match broadcast order). Falls back to title-id order on
+   discs without a Play-All. Each title's runtime is still cross-checked against
+   the TMDB episode runtime. Automatically excluded:
    - **"Play All" titles** (multi-hour concatenations of every episode),
-   - **short extras/menus**, and
+   - **short extras/menus**,
+   - **lower-resolution titles** — an SD title among HD episodes is almost always
+     an extra, not an episode, so it's excluded,
+   - **titles not in the Play-All** — episode-length content the disc's Play-All
+     doesn't include is a bonus/alternate feature, not an episode, and
    - **duplicate playlists** — Blu-rays routinely list each episode as several
      titles (e.g. one *with* the intro/recap, one *without*). These are collapsed
      by **segment-map overlap**: two titles are the same episode when one plays a
@@ -130,6 +138,9 @@ Interactive commands:
      `segment_overlap_threshold`), so a 20-episode season isn't ripped as 40
      files. The kept version is the superset (the one *with* the intro). This
      catches the intro/no-intro case that pure runtime matching cannot.
+
+   Any of these can be pulled back in with `keep <tid>` (CLI) or by dragging the
+   title onto an episode (web UI) if the heuristic guessed wrong.
 
 ### Visual matching (thumbnails)
 

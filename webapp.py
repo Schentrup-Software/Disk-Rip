@@ -55,6 +55,8 @@ class App:
         gmap = self.tv.group_map() if self.tv else {}
         reps = self.tv.representative_ids() if self.tv else set()
         rep_of = self.tv.rep_of_map() if self.tv else {}
+        lowres = {t.id for t in self.tv.excluded_lowres()} if self.tv else set()
+        notinpa = {t.id for t in self.tv.excluded_notinplayall()} if self.tv else set()
         thumbs_on = (self.thumbnailer.available()
                      and bool(getattr(self.disc, "device", "")))
         rows = []
@@ -63,6 +65,10 @@ class App:
                 bucket = "playall"
             elif t.duration < self.min_len:
                 bucket = "short"
+            elif t.id in lowres:
+                bucket = "lowres"
+            elif t.id in notinpa:
+                bucket = "notinplayall"
             elif t.id in dups:
                 bucket = "duplicate"
             else:
