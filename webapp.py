@@ -18,9 +18,10 @@ import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import diskrip as dr
+from thumbs import Thumbnailer
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -41,12 +42,21 @@ class App:
         self.tv = None            # dr.TvProposal (naming + buckets, reused across selects)
         self.movie = None         # dr.MovieProposal
         self.ripjob = None        # dict: progress state for the current rip
+        self.thumbjob = None      # dict: thumbnail prefetch progress
         self.lock = threading.Lock()
+        self.thumbnailer = Thumbnailer(
+            self.cfg.get("ffmpeg"), self.cfg["work_dir"],
+            makemkvcon_path=self.cfg.get("makemkvcon"), opts=self.cfg)
 
     # --- title bucketing --------------------------------------------------
     def title_rows(self):
-        """Every disc title tagged with its bucket, for the UI."""
+        """Every disc title tagged with its bucket + duplicate group, for the UI."""
         dups = self.tv.duplicate_ids() if self.tv else set()
+        gmap = self.tv.group_map() if self.tv else {}
+        reps = self.tv.representative_ids() if self.tv else set()
+        rep_of = self.tv.rep_of_map() if self.tv else {}
+        thumbs_on = (self.thumbnailer.available()
+                     and bool(getattr(self.disc, "device", "")))
         rows = []
         for t in self.disc.titles:
             if t.duration >= self.movie_min:
@@ -65,6 +75,12 @@ class App:
                 "chapters": t.chapters,
                 "segmap": t.segmap,
                 "bucket": bucket,
+                "group": gmap.get(t.id),
+                "isRep": t.id in reps,
+                # duplicates share their representative's frame (same episode) so
+                # the browser fetches one image per group, not one per title
+                "thumb": (f"/api/thumb?title={rep_of.get(t.id, t.id)}&pos=mid"
+                          if thumbs_on and bucket in ("episode", "duplicate") else None),
             })
         return rows
 
@@ -72,17 +88,24 @@ class App:
     def api_drives(self, _body):
         return [
             {"index": idx, "name": name, "label": label, "loaded": loaded}
-            for idx, name, label, loaded in self.mk.list_drives()
+            for idx, name, label, loaded, _device in self.mk.list_drives()
         ]
 
     def api_scan(self, body):
         drive = int(body["drive"])
         self.disc = self.mk.scan(drive)          # may raise DiskRipError (stall)
+        # capture the optical device path (e.g. "E:") for ffmpeg bluray: access
+        for idx, _n, _l, _loaded, device in self.mk.list_drives():
+            if idx == drive:
+                self.disc.device = device
+                break
         self.tv = dr.TvProposal(self.tmdb, self.disc, self.min_len,
-                                self.movie_min, self.cfg["tv_root"])
+                                self.movie_min, self.cfg["tv_root"],
+                                float(self.cfg.get("segment_overlap_threshold", 0.6)))
         self.movie = dr.MovieProposal(self.tmdb, self.disc, self.movie_min)
         query, hints = dr.guess_query_from_label(self.disc.label)
         disc_type = dr.classify(self.disc, self.movie_min, self.min_len)
+        self._prefetch_thumbs(self.disc)
         return {
             "label": self.disc.label,
             "type": disc_type,
@@ -90,6 +113,37 @@ class App:
             "hints": hints,
             "titles": self.title_rows(),
         }
+
+    def _prefetch_thumbs(self, disc):
+        """Warm the thumbnail cache in the background right after a scan, so
+        frames are ready by the time the matching board renders. Only the
+        representative of each duplicate group is extracted (one frame per unique
+        episode); duplicates reuse it. Progress is exposed via /api/thumbs/status."""
+        if not self.thumbnailer.available() or not getattr(disc, "device", ""):
+            self.thumbjob = {"total": 0, "done": 0, "running": False}
+            return
+        reps = self.tv.representative_ids()
+        targets = [t for t in disc.titles
+                   if t.id in reps and self.min_len <= t.duration < self.movie_min]
+        self.thumbjob = {"total": len(targets), "done": 0, "running": True}
+
+        def worker():
+            for t in targets:
+                if self.disc is not disc:                 # a newer scan replaced it
+                    return
+                if self.ripjob and self.ripjob.get("running"):
+                    break                                 # don't fight a rip for the drive
+                try:
+                    self.thumbnailer.frame(disc, t, "mid")
+                except Exception:
+                    pass
+                self.thumbjob["done"] += 1
+            self.thumbjob["running"] = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def api_thumbs_status(self, _body):
+        return getattr(self, "thumbjob", None) or {"total": 0, "done": 0, "running": False}
 
     def api_search(self, body):
         kind, query = body["kind"], body["query"].strip()
@@ -241,6 +295,18 @@ class App:
     def api_rip_status(self, _body):
         return self.ripjob or {"running": False, "items": []}
 
+    def thumb_frame(self, title_id, pos):
+        """Path to a cached JPEG frame for a title, or None. Never reads the
+        drive while a rip is running (one program owns the drive)."""
+        if self.ripjob and self.ripjob.get("running"):
+            return None
+        if not self.disc:
+            return None
+        title = next((t for t in self.disc.titles if t.id == title_id), None)
+        if title is None:
+            return None
+        return self.thumbnailer.frame(self.disc, title, pos)
+
 
 # ---------------------------------------------------------------------------
 # HTTP plumbing
@@ -283,12 +349,34 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        route = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        route = parsed.path
         if route in ("/", "/index.html"):
             return self._send_file(HERE / "ui" / "index.html", "text/html; charset=utf-8")
         if route == "/api/rip/status":
             return self._dispatch("api_rip_status", {})
+        if route == "/api/thumbs/status":
+            return self._dispatch("api_thumbs_status", {})
+        if route == "/api/thumb":
+            return self._send_thumb(parse_qs(parsed.query))
         self.send_error(404)
+
+    def _send_thumb(self, qs):
+        try:
+            title_id = int(qs.get("title", ["-1"])[0])
+        except ValueError:
+            return self.send_error(400)
+        pos = qs.get("pos", ["mid"])[0]
+        if pos not in ("mid", "tail"):
+            pos = "mid"
+        try:
+            path = self.app.thumb_frame(title_id, pos)
+        except Exception:
+            traceback.print_exc()
+            path = None
+        if not path:
+            return self.send_error(404)
+        self._send_file(path, "image/jpeg")
 
     def do_POST(self):
         route = urlparse(self.path).path

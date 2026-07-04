@@ -124,8 +124,43 @@ Interactive commands:
    - **"Play All" titles** (multi-hour concatenations of every episode),
    - **short extras/menus**, and
    - **duplicate playlists** — Blu-rays routinely list each episode as several
-     titles that share the same video segments; titles with an identical segment
-     map are de-duplicated so a 20-episode season isn't ripped as 40 files.
+     titles (e.g. one *with* the intro/recap, one *without*). These are collapsed
+     by **segment-map overlap**: two titles are the same episode when one plays a
+     subset of the other's `.m2ts` segments (or they overlap past
+     `segment_overlap_threshold`), so a 20-episode season isn't ripped as 40
+     files. The kept version is the superset (the one *with* the intro). This
+     catches the intro/no-intro case that pure runtime matching cannot.
+
+### Visual matching (thumbnails)
+
+Because a uniform-runtime show (all ~24 min) can't be told apart by duration, the
+web UI can show a **thumbnail frame on each title** so you can eyeball which
+episode it is and see duplicate groups at a glance (each duplicate group also
+gets a colored dot). Frames are pulled **straight from the disc** — one frame per
+title, no full rip — via ffmpeg's `bluray:` protocol. It's optional and off until
+you set `ffmpeg` in the config (see **ffmpeg setup** below); without it the board
+works exactly as before, just without pictures. The thumbnail is sampled ~40% in
+(past the intro); duplicate versions of an episode share an identical *ending*, so
+that's used as a secondary confirmation frame.
+
+#### ffmpeg setup (optional, enables thumbnails)
+
+1. Install a Windows ffmpeg build **with libbluray** — easiest is
+   `winget install Gyan.FFmpeg` (the "full" build, which includes libbluray).
+   Set `"ffmpeg"` in `config.json` to the full path of `ffmpeg.exe` (or just
+   `"ffmpeg"` if it's on your PATH).
+2. AACS-protected discs are decrypted on the fly by MakeMKV's **libmmbd**. On
+   Windows, libbluray loads a file literally named `libaacs.dll`/`libbdplus.dll`
+   from ffmpeg's own folder — so the app **automatically copies MakeMKV's
+   `libmmbd64.dll` in under those names** the first time it runs (re-copying
+   after an ffmpeg update). No manual DLL juggling or env vars needed. MakeMKV
+   must be installed, and (as always) its GUI **closed** so the drive is free.
+3. That's it — restart `webapp.py` and re-scan. If a specific frame can't be
+   decoded, that title just shows no thumbnail; nothing else breaks.
+
+> Frames extract lazily and are **cached** in `work_dir/thumbs/`; the first one
+> takes ~15 s (MakeMKV/AACS warm-up), the rest are quicker, and extraction is
+> serialized so 16 thumbnails don't thrash the drive at once.
 
 ### Multi-disc sets (continuation awareness)
 
@@ -162,6 +197,9 @@ the title, or pass `--title`.
 | `movie_min_minutes` | Titles this long or longer are treated as a feature / Play-All (default 70). |
 | `language` | TMDB metadata language (default `en`). |
 | `write_nfo` | If `true`, also write a minimal `.nfo` next to each file (Jellyfin/TMM will otherwise scrape by the folder's `[imdb-…]` id). Default `false`. |
+| `segment_overlap_threshold` | How much two titles' segment sets must overlap to be treated as the same episode (default `0.6`; the subset/intro rule fires regardless). Raise toward `1.0` if distinct episodes get wrongly merged. |
+| `ffmpeg` | Path to `ffmpeg.exe` (with libbluray) to enable per-title thumbnails. Empty ⇒ thumbnails off. |
+| `thumb_mid_fraction` / `thumb_tail_seconds` / `thumb_width` | Thumbnail frame offsets and size (defaults `0.40`, `120`, `240`). |
 
 ## Notes & limitations
 

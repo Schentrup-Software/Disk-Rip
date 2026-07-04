@@ -92,6 +92,7 @@ class Disc:
     def __init__(self, drive_index):
         self.drive_index = drive_index
         self.label = ""
+        self.device = ""        # OS device path, e.g. "E:" (for ffmpeg bluray:)
         self.titles = []
 
 
@@ -236,7 +237,7 @@ class MakeMKV:
         return next(csv.reader(io.StringIO(rest)))
 
     def list_drives(self):
-        """Return list of (index, drive_name, disc_label, loaded)."""
+        """Return list of (index, drive_name, disc_label, loaded, device)."""
         _, lines = self._run(["--cache=1", "info", "disc:9999"])
         drives = []
         for ln in lines:
@@ -253,7 +254,7 @@ class MakeMKV:
             if not drive_name:
                 continue
             loaded = visible == "2" or bool(device)
-            drives.append((index, drive_name, disc_label, loaded))
+            drives.append((index, drive_name, disc_label, loaded, device))
         return drives
 
     @staticmethod
@@ -577,12 +578,14 @@ class MovieProposal:
 
 
 class TvProposal:
-    def __init__(self, tmdb, disc, min_len_sec, movie_min_sec, tv_root):
+    def __init__(self, tmdb, disc, min_len_sec, movie_min_sec, tv_root,
+                 overlap_threshold=0.6):
         self.tmdb = tmdb
         self.disc = disc
         self.min_len_sec = min_len_sec
         self.movie_min_sec = movie_min_sec
         self.tv_root = tv_root
+        self.overlap_threshold = overlap_threshold
         self.details = None
         self.season_number = 1
         self.start_episode = 1
@@ -619,22 +622,99 @@ class TvProposal:
         return [t for t in self.disc.titles
                 if self.min_len_sec <= t.duration < self.movie_min_sec]
 
-    def duplicate_ids(self):
-        """Title ids that are duplicate playlists of an earlier title.
+    @staticmethod
+    def _segset(t):
+        """The set of .m2ts segment ids a title plays, e.g. '1,2,3' -> {1,2,3}."""
+        out = set()
+        for x in (t.segmap or "").split(","):
+            x = x.strip()
+            if x.isdigit():
+                out.add(int(x))
+        return out
 
-        TV Blu-rays routinely list each episode as several playlists that share
-        the same underlying video segments. Titles with an identical segment map
-        are the same content; we keep the first and treat the rest as duplicates,
-        so a 20-episode season doesn't get ripped as 40 files."""
-        dups, seen = set(), {}
-        for t in sorted(self._length_bucket(), key=lambda t: t.id):
-            if not t.segmap:
-                continue  # single-segment titles have no map; never merge blindly
-            if t.segmap in seen:
-                dups.add(t.id)
-            else:
-                seen[t.segmap] = t.id
-        return dups
+    def _overlap_groups(self):
+        """Group length-bucket titles that are the same episode.
+
+        TV Blu-rays list each episode as several playlists ('seamless
+        branching') - e.g. one with the intro/recap, one without. Those versions
+        differ in duration (so runtime matching fails) but *share* their video
+        segments: the no-intro playlist plays a subset of the with-intro one's
+        segments. We therefore group by segment-set overlap rather than exact
+        equality, so intro/no-intro pairs collapse to one episode.
+
+        Returns a list of groups; each group is a list of Titles sorted so the
+        representative (the version we keep) is first."""
+        titles = sorted(self._length_bucket(), key=lambda t: t.id)
+        parent = {t.id: t.id for t in titles}
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def union(a, b):
+            parent[find(a)] = find(b)
+
+        segs = {t.id: self._segset(t) for t in titles}
+        for i, a in enumerate(titles):
+            sa = segs[a.id]
+            if not sa:
+                continue  # no segment map -> never merge blindly
+            for b in titles[i + 1:]:
+                sb = segs[b.id]
+                if not sb:
+                    continue
+                inter = sa & sb
+                if not inter:
+                    continue
+                # subset (intro/no-intro) OR strong Jaccard overlap
+                if sa <= sb or sb <= sa or \
+                        len(inter) / len(sa | sb) >= self.overlap_threshold:
+                    union(a.id, b.id)
+
+        buckets = {}
+        for t in titles:
+            buckets.setdefault(find(t.id), []).append(t)
+
+        def rep_key(t):
+            # keep the superset (has the intro/recap), then chaptered, then
+            # longest, then lowest id - see plan.
+            return (len(segs[t.id]), 1 if t.chapters else 0, t.duration, -t.id)
+
+        groups = []
+        for members in buckets.values():
+            members.sort(key=rep_key, reverse=True)  # representative first
+            groups.append(members)
+        # deterministic order: by representative's title id
+        groups.sort(key=lambda g: g[0].id)
+        return groups
+
+    def group_map(self):
+        """{title_id: group_index} for length-bucket titles (UI grouping)."""
+        return {t.id: gi
+                for gi, group in enumerate(self._overlap_groups())
+                for t in group}
+
+    def representative_ids(self):
+        """The one title id we keep per duplicate group."""
+        return {group[0].id for group in self._overlap_groups()}
+
+    def rep_of_map(self):
+        """{title_id: representative_title_id} - every duplicate points at the
+        title we keep for its group. Duplicates are the same episode, so they can
+        share the representative's thumbnail (one frame extraction per episode)."""
+        out = {}
+        for group in self._overlap_groups():
+            rep = group[0].id
+            for t in group:
+                out[t.id] = rep
+        return out
+
+    def duplicate_ids(self):
+        """Title ids that are duplicate playlists of another (non-reps)."""
+        reps = self.representative_ids()
+        return {t.id for t in self._length_bucket() if t.id not in reps}
 
     def episode_titles(self):
         """Episode-length titles, de-duplicated by segment map."""
@@ -1092,7 +1172,7 @@ def pick_drive(mk, requested):
         print(f"Using drive {idx}: {loaded[0][1]}  disc: {loaded[0][2] or '(no label)'}")
         return idx
     print("Drives:")
-    for idx, name, label, is_loaded in drives:
+    for idx, name, label, is_loaded, _device in drives:
         tag = green("disc: " + (label or "(unlabeled)")) if is_loaded else dim("empty")
         print(f"  [{idx}] {name}  {tag}")
     raw = input("Drive index to rip: ").strip()
@@ -1121,8 +1201,9 @@ def main():
     tmdb = TMDB(cfg["tmdb_api_key"], cfg.get("language", "en"))
 
     if args.list_drives:
-        for idx, name, label, loaded in mk.list_drives():
-            print(f"[{idx}] {name}  {'disc: ' + (label or '(unlabeled)') if loaded else 'empty'}")
+        for idx, name, label, loaded, device in mk.list_drives():
+            where = f"disc: {label or '(unlabeled)'} @ {device}" if loaded else "empty"
+            print(f"[{idx}] {name}  {where}")
         return
 
     drive_index = pick_drive(mk, args.drive)
@@ -1159,7 +1240,8 @@ def main():
         execute_movie(mk, p, cfg, args.dry_run)
 
     else:
-        p = TvProposal(tmdb, disc, min_len, movie_min, cfg["tv_root"])
+        p = TvProposal(tmdb, disc, min_len, movie_min, cfg["tv_root"],
+                       float(cfg.get("segment_overlap_threshold", 0.6)))
         p.season_number = args.season or hints.get("season") or 1
         p.start_episode = args.start_episode or 1
         results = p.identify(query) if query else []

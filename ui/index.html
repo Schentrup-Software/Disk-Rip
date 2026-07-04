@@ -56,23 +56,32 @@
     border-radius:8px; padding:8px; display:flex; flex-direction:column; gap:6px; }
   .pool.drag { border-color:var(--accent); background:rgba(74,158,255,.06); }
   .title-chip { background:var(--panel); border:1px solid var(--line); border-radius:7px;
-    padding:7px 9px; cursor:grab; display:flex; align-items:center; gap:8px; }
+    padding:6px 8px; cursor:grab; display:flex; align-items:center; gap:7px;
+    min-width:0; overflow:hidden; white-space:nowrap; }
   .title-chip:active { cursor:grabbing; }
+  .title-chip b, .title-chip .mono { flex:0 0 auto; }
+  .thumb { width:48px; height:27px; object-fit:cover; border-radius:4px; flex:0 0 auto;
+    /* subtle placeholder while the frame extracts - not a black "frame" */
+    background:repeating-linear-gradient(45deg,#232a33,#232a33 6px,#1c222a 6px,#1c222a 12px); }
+  .gdot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
   .title-chip .mono { font-variant-numeric:tabular-nums; }
   .title-chip.ghost { opacity:.35; }
   .ep { display:flex; align-items:center; gap:10px; background:var(--panel2);
     border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; }
   .ep.drop { border-color:var(--accent); background:rgba(74,158,255,.07); }
-  .ep .epnum { font-weight:700; color:var(--accent); width:52px; font-variant-numeric:tabular-nums; }
+  .ep .epnum { font-weight:700; color:var(--accent); width:52px; flex:0 0 auto; font-variant-numeric:tabular-nums; }
   .ep .epname { flex:1; min-width:0; }
   .ep .epname .nm { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .ep .epname .meta { color:var(--dim); font-size:11px; }
-  .ep .slot { width:210px; }
+  .ep .slot { width:270px; flex:0 0 auto; }
   .slot-empty { color:var(--dim); font-size:12px; border:1px dashed var(--line);
     border-radius:6px; padding:6px 8px; text-align:center; }
   .assigned { display:flex; align-items:center; gap:6px; background:var(--panel);
-    border:1px solid var(--line); border-radius:6px; padding:5px 8px; cursor:grab; }
-  .assigned .x { margin-left:auto; color:var(--dim); cursor:pointer; font-weight:700; }
+    border:1px solid var(--line); border-radius:6px; padding:5px 7px; cursor:grab;
+    min-width:0; overflow:hidden; }
+  .assigned .mutedres { color:var(--dim); overflow:hidden; text-overflow:ellipsis; }
+  .assigned .x { margin-left:auto; padding-left:4px; color:var(--dim); cursor:pointer;
+    font-weight:700; flex:0 0 auto; }
   .assigned .x:hover { color:var(--bad); }
 
   /* rip progress */
@@ -138,6 +147,7 @@
     <div class="row" style="margin-bottom:12px; gap:8px">
       <button class="ghost" onclick="autoMap()">↺ Auto-map from e<span id="autostart">1</span></button>
       <button class="ghost" onclick="clearMap()">Clear</button>
+      <span id="thumb-progress" class="muted"></span>
       <span class="muted">Drag a title onto an episode. Unassigned titles are skipped.</span>
     </div>
     <div class="board">
@@ -281,10 +291,33 @@ async function reselect(){
       {kind:state.kind, id:state.selId, season:document.getElementById('season').value});
     state.sel = sel;
     if(sel.kind==='tv'){ renderMatch(); show('s-match',true); show('s-movie',false);
+      startThumbPolling();
       document.getElementById('s-match').scrollIntoView({behavior:'smooth'}); }
     else { renderMovie(); show('s-movie',true); show('s-match',false);
       document.getElementById('s-movie').scrollIntoView({behavior:'smooth'}); }
   } catch(e){ showErr(e.message); }
+}
+
+/* ---------- thumbnail prefetch progress ---------- */
+function startThumbPolling(){
+  if(state.thumbPolling) return;
+  state.thumbPolling = true;
+  pollThumbs();
+}
+async function pollThumbs(){
+  const el = document.getElementById('thumb-progress');
+  try {
+    const j = await (await fetch('/api/thumbs/status')).json();
+    if(j.total && j.running){
+      el.innerHTML = `<span class="spinner" style="width:11px;height:11px;border-width:2px"></span> `+
+        `preparing thumbnails ${j.done}/${j.total}…`;
+      setTimeout(pollThumbs, 1200);
+    } else {
+      el.textContent = '';
+      state.thumbPolling = false;
+      if(j.total){ renderPool(); renderEpisodes(); }  // pick up freshly cached frames
+    }
+  } catch(e){ el.textContent=''; state.thumbPolling=false; }
 }
 
 /* ---------- STEP 3: TV matching board ---------- */
@@ -294,9 +327,16 @@ function bucketPill(b){
   if(b==='short') return '<span class="pill short">extra</span>';
   return '';
 }
+function groupDot(t){
+  // color-code duplicate groups so same-episode titles read as a set at a glance
+  if(t.group==null || t.bucket==='playall' || t.bucket==='short') return '';
+  const hue = (t.group*57)%360;
+  return `<span class="gdot" title="duplicate group ${t.group}" style="background:hsl(${hue} 70% 55%)"></span>`;
+}
 function titleChipHTML(t){
-  return `<span class="mono">t${String(t.id).padStart(2,'0')}</span>
-    <b>${t.hms}</b> <span class="muted">${esc(t.resolution)}</span> ${bucketPill(t.bucket)}`;
+  const img = t.thumb ? `<img class="thumb" src="${t.thumb}" loading="lazy" onerror="this.remove()">` : '';
+  return `${img}${groupDot(t)}<span class="mono">t${String(t.id).padStart(2,'0')}</span>` +
+    `<b>${t.hms}</b> <span class="mutedres">${esc(t.resolution)}</span> ${bucketPill(t.bucket)}`;
 }
 function autoMap(){
   state.assign = {};
@@ -325,7 +365,8 @@ function assignedTitleIds(){ return new Set(Object.values(state.assign).map(Numb
 function renderPool(){
   const used = assignedTitleIds();
   const pool = document.getElementById('pool');
-  const free = state.titles.filter(t=>!used.has(t.id));
+  const free = state.titles.filter(t=>!used.has(t.id))
+    .sort((a,b)=>((a.group??99)-(b.group??99)) || (b.isRep-a.isRep) || (a.id-b.id));
   document.getElementById('pool-count').textContent = `(${free.length} unassigned)`;
   pool.innerHTML='';
   free.forEach(t=>{

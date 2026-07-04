@@ -7,5 +7,10 @@
   "min_length_minutes": 15,
   "movie_min_minutes": 70,
   "language": "en",
-  "write_nfo": false
+  "write_nfo": false,
+  "segment_overlap_threshold": 0.6,
+  "ffmpeg": "",
+  "thumb_mid_fraction": 0.40,
+  "thumb_tail_seconds": 120,
+  "thumb_width": 240
 }
