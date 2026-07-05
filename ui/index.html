@@ -163,7 +163,10 @@
     <h2>Match titles → episodes</h2>
     <div id="match-banner"></div>
     <div class="row" style="margin-bottom:12px; gap:8px">
-      <button class="ghost" onclick="autoMap()">↺ Auto-map from e<span id="autostart">1</span></button>
+      <button class="ghost" onclick="autoMap()">↺ Auto-map</button>
+      <span class="row" style="gap:4px">from <b>e</b>
+        <input id="start-ep" type="number" min="0" style="width:58px"
+               onchange="autoMap()" title="First episode this disc maps to"></span>
       <button class="ghost" onclick="clearMap()">Clear</button>
       <span id="thumb-progress" class="muted"></span>
       <span class="muted">Drag a title onto an episode. Unassigned titles are skipped.</span>
@@ -201,6 +204,7 @@
       <span id="rip-note" class="muted"></span>
     </div>
     <div id="rip-progress" style="margin-top:14px"></div>
+    <div id="rip-again"></div>
   </section>
 </main>
 
@@ -285,6 +289,9 @@ async function scan(){
   document.getElementById('scan-btn').disabled = true;
   try {
     const s = await api('/api/scan', {drive: state.drive});
+    // fresh disc -> drop any mapping/selection carried over from the previous rip,
+    // no matter how we got back here (reset button, stepper, reload)
+    state.assign = {}; state.sel = null; state.selId = null; state.maxStep = 1;
     state.titles = s.titles;
     state.titleById = {}; s.titles.forEach(t=>state.titleById[t.id]=t);
     st.innerHTML = `Found <b>${s.titles.length}</b> titles.`;
@@ -339,6 +346,8 @@ async function reselect(){
       {kind:state.kind, id:state.selId, season:document.getElementById('season').value});
     state.sel = sel;
     state.kind = sel.kind;
+    state.assign = {};  // new show/season -> apply the fresh auto-map, not stale slots
+    if(sel.suggestedStart!=null) document.getElementById('start-ep').value = sel.suggestedStart;
     if(sel.kind==='tv'){ renderMatch(); startThumbPolling(); }
     else { renderMovie(); }
     goStep(3);
@@ -387,9 +396,14 @@ function titleChipHTML(t){
   return `${img}${groupDot(t)}<span class="mono">t${String(t.id).padStart(2,'0')}</span>` +
     `<b>${t.hms}</b> <span class="mutedres">${esc(t.resolution)}</span> ${bucketPill(t.bucket)}`;
 }
+function suggestedOrder(){
+  // disc titles in the server's suggested episode order (title ids)
+  return (state.sel.suggested||[]).slice().sort((a,b)=>a.episode-b.episode).map(s=>s.title_id);
+}
 function autoMap(){
+  const start = parseInt(document.getElementById('start-ep').value, 10) || (state.sel.suggestedStart||1);
   state.assign = {};
-  (state.sel.suggested||[]).forEach(s => { state.assign[s.episode] = s.title_id; });
+  suggestedOrder().forEach((tid, i) => { state.assign[start + i] = tid; });
   renderMatch();
 }
 function clearMap(){ state.assign = {}; renderMatch(); }
@@ -397,7 +411,6 @@ function renderMatch(){
   const sel = state.sel;
   document.getElementById('ep-head').textContent =
     `${sel.title} (${sel.year}) — Season ${sel.season}`;
-  document.getElementById('autostart').textContent = sel.suggestedStart;
   // banner
   let b='';
   const overrun = Object.keys(state.assign).map(Number).filter(n=>n>sel.seasonCount).length;
@@ -531,20 +544,26 @@ async function pollStatus(){
     host.innerHTML = (job.items||[]).map(it=>{
       const color = it.status==='done'?'var(--good)':it.status==='failed'||it.status==='stalled'?'var(--bad)':
                     it.status==='skipped'?'var(--dim)':'var(--accent)';
+      const err = (it.status==='failed'||it.status==='stalled') && it.error
+        ? `<div class="muted" style="color:var(--bad);font-size:12px;margin-top:3px">⚠ ${esc(it.error)}</div>` : '';
       return `<div class="riprow">
         <div class="row" style="justify-content:space-between">
           <span>${esc(it.label||('t'+it.title_id))}</span>
           <span class="muted">${it.status} ${it.status==='ripping'?it.pct+'%':''}</span></div>
-        <div class="bar"><div style="width:${it.pct}%;background:${color}"></div></div></div>`;
+        <div class="bar"><div style="width:${it.pct}%;background:${color}"></div></div>${err}</div>`;
     }).join('');
     if(job.error) showErr(job.error);
     if(job.running){ setTimeout(pollStatus, 800); }
     else {
-      document.getElementById('rip-btn').disabled=false;
       const done=(job.items||[]).filter(i=>i.status==='done').length;
+      const failed=(job.items||[]).filter(i=>i.status==='failed'||i.status==='stalled').length;
+      document.getElementById('rip-btn').classList.add('hidden');  // done - hide Start rip
       document.getElementById('rip-note').innerHTML =
-        `<span class="pill ok">finished</span> ${done} ripped &nbsp;`+
-        `<button onclick="resetWizard()">⟲ Rip another disc</button>`;
+        `<span class="pill ok">finished</span> ${done} ripped`+
+        (failed?` · <span class="pill nas">${failed} failed</span> (see reasons above; usually a dirty/scratched disc — clean it and re-rip, done episodes are skipped)`:'');
+      document.getElementById('rip-again').innerHTML =
+        `<button style="font-size:15px;padding:11px 20px" onclick="resetWizard()">`+
+        `⟲ Rip another disc</button>`;
     }
   } catch(e){ setTimeout(pollStatus, 1200); }
 }
@@ -554,10 +573,11 @@ function resetWizard(){
   Object.assign(state, { drive:null, titles:[], titleById:{}, kind:'tv',
     sel:null, selId:null, assign:{}, step:1, maxStep:1, thumbPolling:false });
   ['results','pool','episodes','match-banner','rip-preview','rip-progress',
-   'rip-note','thumb-progress','drive-list'].forEach(id=>document.getElementById(id).innerHTML='');
+   'rip-note','rip-again','thumb-progress','drive-list'].forEach(id=>document.getElementById(id).innerHTML='');
   document.getElementById('scan-status').textContent='';
   document.getElementById('scan-btn').disabled=true;
   document.getElementById('rip-btn').disabled=false;
+  document.getElementById('rip-btn').classList.remove('hidden');  // it was hidden on finish
   document.getElementById('q').value='';
   document.getElementById('q-year').value='';
   showErr('');

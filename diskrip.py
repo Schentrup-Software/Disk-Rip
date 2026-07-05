@@ -172,6 +172,7 @@ class MakeMKV:
 
     def __init__(self, exe):
         self.exe = exe
+        self.last_rip_error = ""   # why the most recent rip() failed, if it did
         if not Path(exe).exists():
             die(f"makemkvcon not found at: {exe}\nFix 'makemkvcon' in your config.")
 
@@ -364,6 +365,8 @@ class MakeMKV:
         Path(dest_folder).mkdir(parents=True, exist_ok=True)
         before = set(Path(dest_folder).glob("*.mkv"))
         last_pct = -1
+        self.last_rip_error = ""
+        errors = []
 
         def on_line(ln):
             nonlocal last_pct
@@ -383,8 +386,13 @@ class MakeMKV:
                         print(f"\r    ripping [{bar}] {pct:3d}%", end="", flush=True)
             elif ln.startswith("MSG:"):
                 f = self._fields(ln[4:])
-                if len(f) >= 4 and f[0] in ("5003", "5004", "5010") and not on_progress:
-                    print(f"\r    {red(f[3])}{' ' * 20}")
+                text = f[3] if len(f) > 3 else ""
+                if any(w in text.lower() for w in
+                       ("error", "fail", "scsi", "cannot", "can't", "unable")):
+                    if text not in errors:
+                        errors.append(text)   # keep distinct error messages
+                    if not on_progress:
+                        print(f"\r    {red(text)}{' ' * 20}")
 
         rc, _ = self._run(
             ["--progress=-same", "mkv", f"disc:{drive_index}", str(title.id), dest_folder],
@@ -393,10 +401,13 @@ class MakeMKV:
         if not on_progress:
             print()  # newline after progress bar
         if rc is None:
-            print(red(f"    stalled: no progress for {self.STALL_TIMEOUT}s "
-                      "(disc may be unreadable at this title) - aborted."))
+            self.last_rip_error = (f"no progress for {self.STALL_TIMEOUT}s - "
+                                   "disc unreadable at this title (dirty/scratched?)")
+            if not on_progress:
+                print(red(f"    stalled: {self.last_rip_error}"))
             return None
         if rc != 0:
+            self.last_rip_error = "; ".join(errors[-2:]) or f"makemkvcon exited ({rc})"
             return None
         # Locate the freshly written file
         candidate = Path(dest_folder) / title.output_name
@@ -613,9 +624,22 @@ class TvProposal:
         return found
 
     def suggested_start(self):
-        """Continue after the highest episode already on the NAS, if any."""
+        """Where to start numbering this disc's episodes.
+
+        Two cases to tell apart:
+          - A *later disc* in a set: everything it would produce starting at e1 is
+            already on the NAS, so continue after the last existing episode.
+          - The *first disc* or a *re-rip of a partially-failed disc*: some of the
+            episodes it would produce from e1 are still missing, so start at e1 and
+            let the already-present ones be skipped (don't shift the numbering,
+            which would mislabel e.g. episode 1's title as episode 2)."""
         existing = self.existing_episodes()
-        return max(existing) + 1 if existing else 1
+        if not existing:
+            return 1
+        n = len(self.active_titles())          # episodes this disc would produce
+        if n and set(range(1, n + 1)) <= existing:
+            return max(existing) + 1           # later disc -> continue
+        return 1                               # first disc / re-rip -> skip existing
 
     # --- title buckets -----------------------------------------------------
     def _length_bucket(self):

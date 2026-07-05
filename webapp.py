@@ -275,6 +275,7 @@ class App:
                     continue
                 if t is None:
                     item["status"] = "failed"
+                    item["error"] = "title not found on the disc"
                     continue
                 item["status"] = "ripping"
 
@@ -285,9 +286,15 @@ class App:
                                      self.cfg["work_dir"], on_progress=progress)
                 if not ripped:
                     item["status"] = "failed"
+                    item["error"] = self.mk.last_rip_error or "rip failed"
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(ripped), str(target))
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(ripped), str(target))
+                except OSError as e:
+                    item["status"] = "failed"
+                    item["error"] = f"couldn't move to NAS: {e}"
+                    continue
                 item["pct"] = 100
                 item["status"] = "done"
         except dr.DiskRipError as e:
