@@ -30,6 +30,8 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
+import discdb
+
 # Windows console: force UTF-8 so the ✓/⚠/Δ symbols don't crash cp1252, and
 # turn on ANSI escape processing so colors render instead of showing raw codes.
 for _stream in (sys.stdout, sys.stderr):
@@ -336,7 +338,11 @@ class MakeMKV:
                         t.resolution = val
 
         disc.titles = sorted(titles.values(), key=lambda t: t.id)
-        if rc != 0 and not disc.titles:
+        # A real scan always yields at least one title. Zero titles means the
+        # read failed - and MakeMKV sometimes still exits 0 after a "Failed to
+        # open disc"/SCSI error, so don't trust the return code alone. Diagnose
+        # from the message stream regardless of rc.
+        if not disc.titles:
             die(self._diagnose_failure(lines))
         return disc
 
@@ -1336,15 +1342,36 @@ def main():
         return
 
     drive_index = pick_drive(mk, args.drive)
+    # capture the optical device path (e.g. "E:") so TheDiscDb can hash the disc
+    for idx, _n, _l, _loaded, device in mk.list_drives():
+        if idx == drive_index:
+            disc_device = device
+            break
+    else:
+        disc_device = ""
     print("\nScanning disc (this reads the disc structure, no ripping yet)...")
     disc = mk.scan(drive_index)
+    disc.device = disc_device
     if not disc.titles:
         die("No titles found on the disc.")
     print(f"Disc label: {bold(disc.label or '(none)')}   titles: {len(disc.titles)}")
 
+    # TheDiscDb read path: if the community already knows this exact disc, use
+    # its identity (TMDB id + season) to skip the search/disambiguation. Advisory
+    # only - any failure leaves the normal flow untouched.
+    db = None
+    try:
+        db = discdb.identify(disc, cfg)
+    except Exception:
+        db = None
+    if db:
+        loc = f"S{db['season']} " if db.get("season") else ""
+        print(green(f"✓ Matched by TheDiscDb: ") + bold(db["title"])
+              + dim(f" ({db.get('year') or '?'})  {loc}· {db.get('release','')}"))
+
     disc_type = args.type
     if disc_type == "auto":
-        disc_type = classify(disc, movie_min, min_len)
+        disc_type = (db["kind"] if db else classify(disc, movie_min, min_len))
         print(f"Auto-detected type: {bold(disc_type.upper())} "
               f"{dim('(override with --type)')}")
 
@@ -1354,13 +1381,16 @@ def main():
 
     if disc_type == "movie":
         p = MovieProposal(tmdb, disc, movie_min)
-        results = p.identify(query) if query else []
-        if not results:
-            q = input(f"  Couldn't auto-match. Movie title{f' [{query}]' if query else ''}: ").strip() or query
-            results = p.identify(q)
-        if not results:
-            die("No TMDB movie matches. Re-run with --title \"Exact Name\".")
-        p.choose(initial_pick(p, results, "movie", not args.yes)["id"])
+        if db and db.get("kind") == "movie" and db.get("tmdb"):
+            p.choose(db["tmdb"])           # TheDiscDb told us exactly which movie
+        else:
+            results = p.identify(query) if query else []
+            if not results:
+                q = input(f"  Couldn't auto-match. Movie title{f' [{query}]' if query else ''}: ").strip() or query
+                results = p.identify(q)
+            if not results:
+                die("No TMDB movie matches. Re-run with --title \"Exact Name\".")
+            p.choose(initial_pick(p, results, "movie", not args.yes)["id"])
         if not args.yes:
             if not edit_movie(p):
                 print("Aborted."); return
@@ -1371,20 +1401,34 @@ def main():
     else:
         p = TvProposal(tmdb, disc, min_len, movie_min, cfg["tv_root"],
                        float(cfg.get("segment_overlap_threshold", 0.6)))
-        p.season_number = args.season or hints.get("season") or 1
+        db_tv = db if (db and db.get("kind") == "tv") else None
+        p.season_number = args.season or (db_tv and db_tv.get("season")) \
+            or hints.get("season") or 1
         p.start_episode = args.start_episode or 1
-        results = p.identify(query) if query else []
-        if not results:
-            q = input(f"  Couldn't auto-match. Show title{f' [{query}]' if query else ''}: ").strip() or query
-            results = p.identify(q)
-        if not results:
-            die("No TMDB show matches. Re-run with --title \"Exact Name\".")
-        p.choose(initial_pick(p, results, "tv", not args.yes)["id"])
+        if db_tv and db_tv.get("tmdb"):
+            p.choose(db_tv["tmdb"])        # TheDiscDb told us exactly which show
+        else:
+            results = p.identify(query) if query else []
+            if not results:
+                q = input(f"  Couldn't auto-match. Show title{f' [{query}]' if query else ''}: ").strip() or query
+                results = p.identify(q)
+            if not results:
+                die("No TMDB show matches. Re-run with --title \"Exact Name\".")
+            p.choose(initial_pick(p, results, "tv", not args.yes)["id"])
         p.load_season()
+        # If TheDiscDb mapped this disc's episodes, start numbering at the lowest
+        # one it lists for the chosen season (its ordering is human-curated).
+        if db_tv and args.start_episode is None:
+            eps = [a["episode"] for a in db_tv.get("assignments", [])
+                   if a.get("episode") and (not a.get("season")
+                                            or a["season"] == p.season_number)]
+            if eps:
+                p.start_episode = min(eps)
         # Continuation-disc awareness: if episodes are already on the NAS and the
-        # user didn't pin a start, resume after the last one instead of colliding
-        # from e01. Announced, and overridable with 'start <n>' at the prompt.
-        if args.start_episode is None:
+        # user didn't pin a start (and TheDiscDb didn't already tell us), resume
+        # after the last one instead of colliding from e01. Announced, and
+        # overridable with 'start <n>' at the prompt.
+        if args.start_episode is None and not (db_tv and db_tv.get("assignments")):
             sug = p.suggested_start()
             if sug > 1:
                 p.start_episode = sug

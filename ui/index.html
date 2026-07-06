@@ -210,7 +210,8 @@
 
 <script>
 const state = { drive:null, titles:[], titleById:{}, kind:'tv', sel:null, assign:{},
-                step:1, maxStep:1 };
+                step:1, maxStep:1,
+                discdb:null, discdbAssign:null, pendingDiscdb:false };
 
 function showErr(msg){
   document.getElementById('err').innerHTML =
@@ -292,9 +293,11 @@ async function scan(){
     // fresh disc -> drop any mapping/selection carried over from the previous rip,
     // no matter how we got back here (reset button, stepper, reload)
     state.assign = {}; state.sel = null; state.selId = null; state.maxStep = 1;
+    state.discdb = s.discdb || null; state.discdbAssign = null; state.pendingDiscdb = false;
     state.titles = s.titles;
     state.titleById = {}; s.titles.forEach(t=>state.titleById[t.id]=t);
-    st.innerHTML = `Found <b>${s.titles.length}</b> titles.`;
+    st.innerHTML = `Found <b>${s.titles.length}</b> titles.`
+      + (state.discdb && state.discdb.matched ? ' · <span class="pill ok">TheDiscDb match</span>' : '');
     document.getElementById('disc-label').textContent = s.label || '(no label)';
     document.getElementById('q').value = s.query || '';
     state.kind = s.type;
@@ -303,6 +306,9 @@ async function scan(){
     onKind();
     goStep(2);
     search();
+    // TheDiscDb already knows this disc -> pre-fill identity + board and jump
+    // ahead. The identify step stays populated behind us for the Back button.
+    if(state.discdb && state.discdb.matched) await applyDiscdbMatch();
   } catch(e){ showErr(e.message); st.textContent=''; }
   document.getElementById('scan-btn').disabled = false;
 }
@@ -346,12 +352,35 @@ async function reselect(){
       {kind:state.kind, id:state.selId, season:document.getElementById('season').value});
     state.sel = sel;
     state.kind = sel.kind;
-    state.assign = {};  // new show/season -> apply the fresh auto-map, not stale slots
-    if(sel.suggestedStart!=null) document.getElementById('start-ep').value = sel.suggestedStart;
+    if(state.pendingDiscdb && state.discdbAssign){
+      // pre-fill the board from TheDiscDb's per-title episode mapping
+      state.assign = Object.assign({}, state.discdbAssign);
+      const eps = Object.keys(state.assign).map(Number);
+      if(eps.length) document.getElementById('start-ep').value = Math.min(...eps);
+      state.pendingDiscdb = false;
+    } else {
+      state.assign = {};  // new show/season -> apply the fresh auto-map, not stale slots
+      if(sel.suggestedStart!=null) document.getElementById('start-ep').value = sel.suggestedStart;
+    }
     if(sel.kind==='tv'){ renderMatch(); startThumbPolling(); }
     else { renderMovie(); }
     goStep(3);
   } catch(e){ showErr(e.message); }
+}
+
+/* Pre-fill identity + board from a TheDiscDb hit (community-curated mapping). */
+async function applyDiscdbMatch(){
+  const db = state.discdb;
+  if(!db || !db.matched || db.tmdb==null) return;
+  state.kind = db.kind;
+  const radio = document.querySelector(`input[name=kind][value=${db.kind}]`);
+  if(radio){ radio.checked = true; onKind(); }
+  if(db.kind==='tv' && db.season) document.getElementById('season').value = db.season;
+  state.discdbAssign = {};
+  (db.assignments||[]).forEach(a=>{ if(a.episode!=null) state.discdbAssign[a.episode]=a.title_id; });
+  state.selId = db.tmdb;
+  state.pendingDiscdb = true;
+  await reselect();
 }
 
 /* ---------- thumbnail prefetch progress ---------- */
@@ -413,6 +442,11 @@ function renderMatch(){
     `${sel.title} (${sel.year}) — Season ${sel.season}`;
   // banner
   let b='';
+  const db = state.discdb;
+  if(db && db.matched && state.selId===db.tmdb && Number(sel.season)===Number(db.season||sel.season))
+    b += `<div class="banner good">✓ Matched by <b>TheDiscDb</b>${db.release?' — '+esc(db.release):''}`+
+         `${db.disc?', '+esc(db.disc):''}. Episode mapping pre-filled from community data — `+
+         `verify below and hit rip.</div>`;
   const overrun = Object.keys(state.assign).map(Number).filter(n=>n>sel.seasonCount).length;
   if(sel.existing && sel.existing.length)
     b += `<div class="banner warn">This season already has ${sel.existing.length} episode(s) on the NAS `+
@@ -496,7 +530,10 @@ function assignTo(epNumber, tid){
 /* ---------- STEP 3b: movie ---------- */
 function renderMovie(){
   const s=state.sel;
-  document.getElementById('movie-body').innerHTML = `
+  const db=state.discdb;
+  const dbnote = (db && db.matched && db.kind==='movie' && state.selId===db.tmdb)
+    ? `<div class="banner good">✓ Matched by <b>TheDiscDb</b>${db.release?' — '+esc(db.release):''}. Identity pre-filled.</div>` : '';
+  document.getElementById('movie-body').innerHTML = dbnote + `
     <div class="row" style="justify-content:space-between">
       <b style="font-size:15px">${esc(s.title)} <span class="muted">(${s.year})</span></b>
       <span class="muted">imdb-${s.imdb||'?'}</span></div>
@@ -571,7 +608,8 @@ async function pollStatus(){
 /* ---------- reset for the next disc ---------- */
 function resetWizard(){
   Object.assign(state, { drive:null, titles:[], titleById:{}, kind:'tv',
-    sel:null, selId:null, assign:{}, step:1, maxStep:1, thumbPolling:false });
+    sel:null, selId:null, assign:{}, step:1, maxStep:1, thumbPolling:false,
+    discdb:null, discdbAssign:null, pendingDiscdb:false });
   ['results','pool','episodes','match-banner','rip-preview','rip-progress',
    'rip-note','rip-again','thumb-progress','drive-list'].forEach(id=>document.getElementById(id).innerHTML='');
   document.getElementById('scan-status').textContent='';

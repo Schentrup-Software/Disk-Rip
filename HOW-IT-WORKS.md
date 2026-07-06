@@ -1,8 +1,9 @@
 # How Disk-Rip works
 
-Details behind the features in the [README](README.md): how discs are identified,
-how episodes are mapped, how thumbnails and multi-disc handling work, plus the
-full configuration and command-line reference.
+Details behind the features in the [README](README.md): how discs are identified
+(including the TheDiscDb instant match), how episodes are mapped, how thumbnails
+and multi-disc handling work, plus the full configuration and command-line
+reference.
 
 Paths below use placeholders like `\\SERVER\media\tv` and
 `C:\Users\<you>\Disk-Rip` — substitute your own.
@@ -42,7 +43,51 @@ episode to assign it, drag it back to the pool to skip it.
 
 ---
 
+## Instant match via TheDiscDb
+
+Before falling back to label-guessing and TMDB search, Disc-Rip asks
+[TheDiscDb](https://thediscdb.com/) — a community database of ~4,400 catalogued
+discs — whether it already knows this exact disc. When it does, the whole
+identify step is filled in for you: the show, the season, and every title's
+episode number, straight from human-curated data.
+
+**How the disc is recognized.** Every pressed disc of a given release has the
+same stream-file sizes stamped into it, so Disc-Rip computes TheDiscDb's
+*ContentHash* — an MD5 over the sizes of the disc's `.m2ts` (Blu-ray) or
+`VIDEO_TS` (DVD) files. File *sizes* live in the unencrypted directory, so this
+needs **no decryption, no keys, and no MakeMKV** — just a directory read that
+takes milliseconds. That hash is looked up over TheDiscDb's public GraphQL API.
+
+**How their mapping lands on your titles.** Title *numbers* differ between their
+scan and yours (different MakeMKV versions, different minimum-length floors), so
+the match is joined on what's intrinsic to the mastering and present on both
+sides: each title's **source file + segment map**. Titles that match get their
+season/episode; anything unmatched (or a disc title they didn't map) just falls
+into the normal buckets. Where they mapped an intro/no-intro pair to the same
+episode, Disc-Rip keeps its own representative so the board still shows one title
+per episode.
+
+**On a hit**, the web UI jumps to a pre-filled board with a *"Matched by
+TheDiscDb"* banner; the CLI skips the TMDB search and sets the show, season, and
+start episode. **You still confirm and rip** — your click doubles as a check that
+the community data is right.
+
+**It's strictly advisory.** Any failure — the disc isn't in the database, you're
+offline, the API changed, a burned disc hashes to nothing — silently falls back
+to the normal flow. The feature only ever *adds* signal.
+
+**Caching & privacy.** Results are cached under
+`%APPDATA%\Disk-Rip\discdb-cache` (hits kept indefinitely, misses re-checked
+after a week), so re-scanning a disc — common in a multi-disc box-set session —
+doesn't re-query. The only thing sent to TheDiscDb is the 16-byte content hash;
+no filenames, paths, or personal data. Turn the whole feature off with
+`"discdb": false` in the config.
+
+---
+
 ## How identification works
+
+*(Used when TheDiscDb has no match — see above.)*
 
 1. **Disc label** — MakeMKV usually reports the real volume name (e.g.
    `Avatar: The Last Airbender Book One: Water Disc 1`). The label is parsed for
@@ -179,6 +224,8 @@ py webapp.py --port 9000 --no-browser
 | `segment_overlap_threshold` | How much two titles' segment sets must overlap to be treated as the same episode (default `0.6`; the subset/intro rule fires regardless). Raise toward `1.0` if distinct episodes get wrongly merged. |
 | `ffmpeg` | Path to `ffmpeg.exe` (with libbluray) to enable thumbnails. Empty ⇒ thumbnails off. |
 | `thumb_mid_fraction` / `thumb_tail_seconds` / `thumb_width` | Thumbnail frame offset and size (defaults `0.40`, `120`, `240`). |
+| `discdb` | Look up discs in [TheDiscDb](https://thediscdb.com/) to auto-fill identity and episode mapping (default `true`). Set `false` to disable all lookups. |
+| `discdb_endpoint` / `discdb_timeout` | TheDiscDb GraphQL URL and per-lookup timeout in seconds (defaults `https://thediscdb.com/graphql/`, `4`). Lookups are advisory — a timeout just falls back to the normal flow. |
 
 ---
 
@@ -187,6 +234,10 @@ py webapp.py --port 9000 --no-browser
 - **Artwork / full metadata** — folder names carry the `[imdb-…]` id, so Jellyfin
   and tinyMediaManager scrape posters, fanart, and `.nfo` after the rip. Disc-Rip
   focuses on ripping + correct naming, not artwork.
+- **TheDiscDb coverage** — the lookup only helps for discs already in the
+  database; TV box sets are the thinnest area. A miss costs you nothing (normal
+  flow continues), and the ContentHash is drive-independent, so a disc that
+  matches once matches on any drive.
 - **Drive contention** — only one program can read the optical drive at a time.
   Keep the MakeMKV app closed while scanning or ripping. Disc-Rip refuses to scan
   if it detects the MakeMKV app running.
@@ -208,5 +259,6 @@ py webapp.py --port 9000 --no-browser
 | `webapp.py` | Local web server + JSON API. |
 | `ui/index.html` | The drag-and-drop web UI (single file). |
 | `thumbs.py` | ffmpeg frame extraction + libmmbd/AACS setup. |
+| `discdb.py` | TheDiscDb lookup: ContentHash, GraphQL query + cache, title join. Also runnable standalone (`py discdb.py <drive>`) to test a disc. |
 | `setup.ps1` / `setup.cmd` | One-time Windows setup (winget installs + config). |
 | `config.example.json` | Template config with all keys and defaults. |

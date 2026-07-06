@@ -16,6 +16,10 @@ TV:      Show (Year) [imdb-ttID]/Season N/Show (Year) - s01e01.mkv
 
 - **Drag-and-drop web UI** (or a terminal CLI) — you always confirm before
   anything is ripped or moved.
+- **Recognizes known discs via [TheDiscDb](https://thediscdb.com/)** — if the
+  community already catalogued your exact disc, the show, season, and per-episode
+  title mapping are filled in automatically; you just review and rip. Unknown
+  discs fall back to the normal flow.
 - **TMDB identification** with a match picker (e.g. the 2005 vs 2024 *Avatar*).
 - **Handles messy TV Blu-rays** — excludes "Play All" titles, extras, and
   duplicate playlists; orders episodes using the disc's own Play-All; resumes
@@ -73,6 +77,10 @@ Opens <http://127.0.0.1:8765>. Pick the drive → **Scan** → confirm the show 
 drag any titles that need fixing onto the right episodes → **Rip**. The board
 flags duplicates, extras, and episodes you already have on the NAS.
 
+If the disc is already in **TheDiscDb**, Scan jumps straight to a pre-filled
+board — a "Matched by TheDiscDb" banner, the right show/season selected, and
+every episode already assigned — so you usually just click **Rip**.
+
 ### CLI
 
 ```powershell
@@ -106,6 +114,7 @@ defaults. See `config.example.json` and the
 
 ## Credits
 
-Uses [MakeMKV](https://www.makemkv.com/) for ripping and the
-[TMDB](https://www.themoviedb.org/) API for metadata.
+Uses [MakeMKV](https://www.makemkv.com/) for ripping, the
+[TMDB](https://www.themoviedb.org/) API for metadata, and
+[TheDiscDb](https://thediscdb.com/) (MIT) for community disc-to-episode mappings.
 This product uses the TMDB API but is not endorsed or certified by TMDB.

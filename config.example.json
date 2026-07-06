@@ -12,5 +12,8 @@
   "ffmpeg": "",
   "thumb_mid_fraction": 0.40,
   "thumb_tail_seconds": 120,
-  "thumb_width": 240
+  "thumb_width": 240,
+  "discdb": true,
+  "discdb_endpoint": "https://thediscdb.com/graphql/",
+  "discdb_timeout": 4
 }

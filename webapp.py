@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import diskrip as dr
+import discdb
 from thumbs import Thumbnailer
 
 HOST = "127.0.0.1"
@@ -111,14 +112,42 @@ class App:
         self.movie = dr.MovieProposal(self.tmdb, self.disc, self.movie_min)
         query, hints = dr.guess_query_from_label(self.disc.label)
         disc_type = dr.classify(self.disc, self.movie_min, self.min_len)
+        db = self._discdb_lookup()
         self._prefetch_thumbs(self.disc)
         return {
             "label": self.disc.label,
-            "type": disc_type,
+            "type": db["kind"] if db else disc_type,   # community data wins the type call
             "query": query,
             "hints": hints,
             "titles": self.title_rows(),
+            "discdb": db,
         }
+
+    def _discdb_lookup(self):
+        """Ask TheDiscDb whether it knows this disc. Advisory: any failure -> None
+        and the wizard runs its normal identify flow. On a hit, collapse the
+        community's per-title mapping to one title per episode (preferring our
+        representative when they mapped an intro/no-intro pair) so the board can
+        pre-fill directly."""
+        try:
+            match = discdb.identify(self.disc, self.cfg)
+        except Exception:
+            traceback.print_exc()
+            return None
+        if not match:
+            return None
+        reps = self.tv.representative_ids() if self.tv else set()
+        best = {}
+        for a in match.get("assignments", []):
+            if a.get("episode") is None:
+                continue
+            key = (a.get("season"), a["episode"])
+            cur = best.get(key)
+            if cur is None or (a["title_id"] in reps and cur["title_id"] not in reps):
+                best[key] = a
+        match["assignments"] = sorted(
+            best.values(), key=lambda a: (a.get("season") or 0, a["episode"]))
+        return match
 
     def _prefetch_thumbs(self, disc):
         """Warm the thumbnail cache in the background right after a scan, so
