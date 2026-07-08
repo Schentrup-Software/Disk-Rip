@@ -269,7 +269,7 @@ class App:
                 items.append({
                     "title_id": mt.id, "label": self.movie.title,
                     "target": str(Path(self.cfg["movie_root"]) / folder / fname),
-                    "pct": 0, "status": "queued",
+                    "pct": 0, "status": "queued", "phase": "",
                 })
             else:
                 season_dir = self.tv.season_dir()
@@ -283,7 +283,7 @@ class App:
                         "label": f"s{self.tv.season_number:02d}e{epnum:02d} "
                                  f"{ep.get('name','')}".strip(),
                         "target": str(season_dir / fname),
-                        "pct": 0, "status": "queued",
+                        "pct": 0, "status": "queued", "phase": "",
                     })
             self.ripjob = {"running": True, "kind": kind, "items": items,
                            "error": None, "started": time.time()}
@@ -308,8 +308,9 @@ class App:
                     continue
                 item["status"] = "ripping"
 
-                def progress(pct, _item=item):
+                def progress(pct, phase="", _item=item):
                     _item["pct"] = pct
+                    _item["phase"] = phase
 
                 ripped = self.mk.rip(self.disc.drive_index, t,
                                      self.cfg["work_dir"], on_progress=progress)

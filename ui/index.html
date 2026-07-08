@@ -111,7 +111,10 @@
   .banner.good { background:rgba(63,185,80,.10); border:1px solid var(--good); }
   code { background:var(--panel); padding:1px 5px; border-radius:4px; font-size:12px; }
   .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--line);
-    border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
+    border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite;
+    vertical-align:middle; }
+  /* spinner + label, vertically centered as a unit */
+  .spin-note { display:inline-flex; align-items:center; gap:7px; }
   @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
@@ -269,17 +272,21 @@ async function loadDrives(){
       const c = document.createElement('span');
       c.className = 'card' + (state.drive===d.index?' sel':'');
       c.style.padding='6px 10px';
+      c.dataset.index = d.index;
       c.innerHTML = `<b>[${d.index}]</b> ${esc(d.name)} ` +
         (d.loaded ? `<span class="pill ok">${esc(d.label||'disc')}</span>` : '<span class="pill short">empty</span>');
-      c.onclick = () => { state.drive = d.index;
-        document.getElementById('scan-btn').disabled = false; loadDrivesHighlight(); };
+      c.onclick = () => selectDrive(d.index);
       el.appendChild(c);
     });
   } catch(e){ showErr(e.message); el.innerHTML=''; }
 }
-function loadDrivesHighlight(){
-  [...document.querySelectorAll('#drive-list .card')].forEach((c,i)=>{});
-  loadDrives();
+function selectDrive(index){
+  // just move the highlight in place - re-querying /api/drives made the list
+  // blink out and back (spinner + full re-render) on every click
+  state.drive = index;
+  document.getElementById('scan-btn').disabled = false;
+  document.querySelectorAll('#drive-list .card').forEach(c=>
+    c.classList.toggle('sel', Number(c.dataset.index)===index));
 }
 
 /* ---------- STEP 2: scan + identify ---------- */
@@ -566,13 +573,16 @@ async function goRip(){
 }
 async function startRip(){
   showErr('');
-  document.getElementById('rip-btn').disabled=true;
-  document.getElementById('rip-note').innerHTML='<span class="spinner"></span> ripping…';
+  // hide the button + drop the top "ripping…" note - the per-item rows below
+  // are the single source of progress (avoids showing "ripping" several times)
+  const btn=document.getElementById('rip-btn');
+  btn.classList.add('hidden');
+  document.getElementById('rip-note').textContent='';
   try {
     const body = state.kind==='movie' ? {kind:'movie'} : {kind:'tv', assignments:currentAssignments()};
     await api('/api/rip', body);
     pollStatus();
-  } catch(e){ showErr(e.message); document.getElementById('rip-btn').disabled=false; }
+  } catch(e){ showErr(e.message); btn.classList.remove('hidden'); btn.disabled=false; }
 }
 async function pollStatus(){
   try {
@@ -583,15 +593,23 @@ async function pollStatus(){
                     it.status==='skipped'?'var(--dim)':'var(--accent)';
       const err = (it.status==='failed'||it.status==='stalled') && it.error
         ? `<div class="muted" style="color:var(--bad);font-size:12px;margin-top:3px">⚠ ${esc(it.error)}</div>` : '';
+      // active row shows just the % (the phase is named up top by the spinner)
+      const stat = it.status==='ripping' ? it.pct+'%' : it.status;
       return `<div class="riprow">
         <div class="row" style="justify-content:space-between">
           <span>${esc(it.label||('t'+it.title_id))}</span>
-          <span class="muted">${it.status} ${it.status==='ripping'?it.pct+'%':''}</span></div>
+          <span class="muted">${stat}</span></div>
         <div class="bar"><div style="width:${it.pct}%;background:${color}"></div></div>${err}</div>`;
     }).join('');
     if(job.error) showErr(job.error);
-    if(job.running){ setTimeout(pollStatus, 800); }
-    else {
+    if(job.running){
+      // one spinner up top; its text is the current phase (Analysing / Ripping)
+      const active=(job.items||[]).find(i=>i.status==='ripping');
+      const phase=active ? (active.phase||'Ripping') : 'Preparing';
+      document.getElementById('rip-note').innerHTML =
+        `<span class="spin-note"><span class="spinner"></span>${esc(phase)}…</span>`;
+      setTimeout(pollStatus, 800);
+    } else {
       const done=(job.items||[]).filter(i=>i.status==='done').length;
       const failed=(job.items||[]).filter(i=>i.status==='failed'||i.status==='stalled').length;
       document.getElementById('rip-btn').classList.add('hidden');  // done - hide Start rip

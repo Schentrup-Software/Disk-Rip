@@ -371,25 +371,45 @@ class MakeMKV:
         Path(dest_folder).mkdir(parents=True, exist_ok=True)
         before = set(Path(dest_folder).glob("*.mkv"))
         last_pct = -1
+        last_phase = None
+        phase = ""            # friendly name of the current MakeMKV sub-step
         self.last_rip_error = ""
         errors = []
 
+        def phase_label(name):
+            low = name.lower()
+            if "analy" in low:
+                return "Analysing"
+            if "sav" in low or "mkv" in low:
+                return "Ripping"
+            return name or "Working"
+
         def on_line(ln):
-            nonlocal last_pct
-            if ln.startswith("PRGV:"):
+            nonlocal last_pct, last_phase, phase
+            if ln.startswith("PRGC:"):
+                # PRGC:code,id,name - the current sub-operation. Its name tells us
+                # which phase we're in (analyze vs. save); the per-phase percent
+                # below resets to 0 as each phase begins.
+                f = self._fields(ln[5:])
+                phase = phase_label(f[2] if len(f) > 2 else "")
+            elif ln.startswith("PRGV:"):
                 f = self._fields(ln[5:])
                 try:
-                    cur, total, mx = int(f[0]), int(f[1]), int(f[2])
+                    # PRGV:current,total,max - use 'current' (this phase's own
+                    # progress) and pair it with the phase name, so it reads
+                    # "Analysing 0->100%" then "Ripping 0->100%".
+                    cur, mx = int(f[0]), int(f[2])
                     pct = int(cur * 100 / mx) if mx else 0
                 except (ValueError, IndexError):
                     return
-                if pct != last_pct:
-                    last_pct = pct
+                if pct != last_pct or phase != last_phase:
+                    last_pct, last_phase = pct, phase
                     if on_progress:
-                        on_progress(pct)
+                        on_progress(pct, phase)
                     else:
                         bar = "#" * (pct // 3) + "-" * (33 - pct // 3)
-                        print(f"\r    ripping [{bar}] {pct:3d}%", end="", flush=True)
+                        print(f"\r    {(phase or 'Ripping'):<10} [{bar}] {pct:3d}%",
+                              end="", flush=True)
             elif ln.startswith("MSG:"):
                 f = self._fields(ln[4:])
                 text = f[3] if len(f) > 3 else ""
