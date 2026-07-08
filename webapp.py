@@ -137,13 +137,24 @@ class App:
         if not match:
             return None
         reps = self.tv.representative_ids() if self.tv else set()
+
+        def score(a):
+            # rank candidates that TheDiscDb mapped to the same episode: avoid
+            # commentary/alternate-audio tracks, prefer our representative title,
+            # and prefer a real multi-part title over a single (so the double
+            # "12-13" beats a lone "12 - With Commentary" extra)
+            name = (a.get("name") or "").lower()
+            return (0 if "commentary" in name else 1,
+                    1 if a["title_id"] in reps else 0,
+                    1 if a.get("episode_end") else 0)
+
         best = {}
         for a in match.get("assignments", []):
             if a.get("episode") is None:
                 continue
             key = (a.get("season"), a["episode"])
             cur = best.get(key)
-            if cur is None or (a["title_id"] in reps and cur["title_id"] not in reps):
+            if cur is None or score(a) > score(cur):
                 best[key] = a
         match["assignments"] = sorted(
             best.values(), key=lambda a: (a.get("season") or 0, a["episode"]))
@@ -249,11 +260,12 @@ class App:
         season_dir = self.tv.season_dir()
         for a in body["assignments"]:
             epnum = int(a["episode"])
-            fname = self.tv.file_for(epnum)
+            ep_end = int(a["episode_end"]) if a.get("episode_end") else None
+            fname = self.tv.file_for(epnum, ep_end)
             target = season_dir / fname
             out.append({"title_id": int(a["title_id"]),
-                        "episode": epnum, "target": str(target),
-                        "exists": target.exists()})
+                        "episode": epnum, "episode_end": ep_end,
+                        "target": str(target), "exists": target.exists()})
         return out
 
     # --- ripping (runs in a background thread) ----------------------------
@@ -275,13 +287,15 @@ class App:
                 season_dir = self.tv.season_dir()
                 for a in body["assignments"]:
                     epnum = int(a["episode"])
-                    fname = self.tv.file_for(epnum)
+                    ep_end = int(a["episode_end"]) if a.get("episode_end") else None
+                    fname = self.tv.file_for(epnum, ep_end)
                     ep = self.tv.episode_meta(epnum)
+                    span = (f"s{self.tv.season_number:02d}e{epnum:02d}"
+                            + (f"-e{ep_end:02d}" if ep_end else ""))
                     items.append({
                         "title_id": int(a["title_id"]),
                         "episode": epnum,
-                        "label": f"s{self.tv.season_number:02d}e{epnum:02d} "
-                                 f"{ep.get('name','')}".strip(),
+                        "label": f"{span} {ep.get('name','')}".strip(),
                         "target": str(season_dir / fname),
                         "pct": 0, "status": "queued", "phase": "",
                     })

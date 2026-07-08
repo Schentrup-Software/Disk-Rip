@@ -207,6 +207,30 @@ def _as_int(v):
     return None
 
 
+def _parse_episode(val):
+    """Parse a TheDiscDb episode field that may be '12', a bare int, or a range
+    like '12-13' (a double-length playlist covering two episodes). Returns
+    (start, end) with end==start for a single episode, or (None, None) if it
+    can't be parsed or spans too many episodes to be a real multi-part - a
+    'Play All' is stored as e.g. '9-16' and must NOT be treated as an episode."""
+    if isinstance(val, bool):
+        return None, None
+    if isinstance(val, int):
+        return val, val
+    s = str(val or "").strip()
+    m = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", s)   # "12-13" or "12–13"
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if b < a:
+            a, b = b, a
+        if b - a + 1 > 3:            # wider than a 3-parter -> Play All, skip
+            return None, None
+        return a, b
+    if s.isdigit():
+        return int(s), int(s)
+    return None, None
+
+
 def join_titles(our_titles, their_disc):
     """Map our scanned titles onto TheDiscDb's episode assignments.
 
@@ -238,13 +262,17 @@ def join_titles(our_titles, their_disc):
         item = tt.get("item")
         if not item:
             continue
-        ep = _as_int(item.get("episode"))
-        season = _as_int(item.get("season"))
+        start, end = _parse_episode(item.get("episode"))
+        name = item.get("title") or ""
+        # skip Play-All titles (no real single episode) and disc-spanning ranges
+        if start is None or "play all" in name.lower():
+            continue
         out.append({
             "title_id": ot.id,
-            "season": season,
-            "episode": ep,
-            "name": item.get("title") or "",
+            "season": _as_int(item.get("season")),
+            "episode": start,
+            "episode_end": end if end != start else None,   # double episode
+            "name": name,
             "type": item.get("type") or "",
         })
     return out

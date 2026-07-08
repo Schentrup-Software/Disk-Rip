@@ -934,12 +934,15 @@ class TvProposal:
         return [(t, self.episode_meta(self.start_episode + i))
                 for i, t in enumerate(self.active_titles())]
 
-    def file_for(self, ep_num):
+    def file_for(self, ep_num, ep_end=None):
         base = sanitize(self.title)
         y = self.year
         show = f"{base} ({y})" if y else base
         s = self.season_number
-        return f"{show} - s{s:02d}e{ep_num:02d}.mkv"
+        span = f"s{s:02d}e{ep_num:02d}"
+        if ep_end and ep_end != ep_num:
+            span += f"-e{ep_end:02d}"   # double episode, e.g. s02e12-e13 (Jellyfin-aware)
+        return f"{show} - {span}.mkv"
 
 
 # ---------------------------------------------------------------------------

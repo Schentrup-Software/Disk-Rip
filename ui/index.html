@@ -86,7 +86,8 @@
   .ep { display:flex; align-items:center; gap:10px; background:var(--panel2);
     border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px; }
   .ep.drop { border-color:var(--accent); background:rgba(74,158,255,.07); }
-  .ep .epnum { font-weight:700; color:var(--accent); width:52px; flex:0 0 auto; font-variant-numeric:tabular-nums; }
+  .ep .epnum { font-weight:700; color:var(--accent); min-width:52px; flex:0 0 auto;
+    white-space:nowrap; padding-right:8px; font-variant-numeric:tabular-nums; }
   .ep .epname { flex:1; min-width:0; }
   .ep .epname .nm { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .ep .epname .meta { color:var(--dim); font-size:11px; }
@@ -213,8 +214,9 @@
 
 <script>
 const state = { drive:null, titles:[], titleById:{}, kind:'tv', sel:null, assign:{},
+                range:{},   // {startEpisode: endEpisode} for double episodes (s02e12-e13)
                 step:1, maxStep:1,
-                discdb:null, discdbAssign:null, pendingDiscdb:false };
+                discdb:null, discdbAssign:null, discdbRange:null, pendingDiscdb:false };
 
 function showErr(msg){
   document.getElementById('err').innerHTML =
@@ -362,11 +364,12 @@ async function reselect(){
     if(state.pendingDiscdb && state.discdbAssign){
       // pre-fill the board from TheDiscDb's per-title episode mapping
       state.assign = Object.assign({}, state.discdbAssign);
+      state.range = Object.assign({}, state.discdbRange||{});
       const eps = Object.keys(state.assign).map(Number);
       if(eps.length) document.getElementById('start-ep').value = Math.min(...eps);
       state.pendingDiscdb = false;
     } else {
-      state.assign = {};  // new show/season -> apply the fresh auto-map, not stale slots
+      state.assign = {}; state.range = {};  // new show/season -> fresh auto-map, not stale slots
       if(sel.suggestedStart!=null) document.getElementById('start-ep').value = sel.suggestedStart;
     }
     if(sel.kind==='tv'){ renderMatch(); startThumbPolling(); }
@@ -383,8 +386,12 @@ async function applyDiscdbMatch(){
   const radio = document.querySelector(`input[name=kind][value=${db.kind}]`);
   if(radio){ radio.checked = true; onKind(); }
   if(db.kind==='tv' && db.season) document.getElementById('season').value = db.season;
-  state.discdbAssign = {};
-  (db.assignments||[]).forEach(a=>{ if(a.episode!=null) state.discdbAssign[a.episode]=a.title_id; });
+  state.discdbAssign = {}; state.discdbRange = {};
+  (db.assignments||[]).forEach(a=>{
+    if(a.episode==null) return;
+    state.discdbAssign[a.episode]=a.title_id;
+    if(a.episode_end && a.episode_end!==a.episode) state.discdbRange[a.episode]=a.episode_end;
+  });
   state.selId = db.tmdb;
   state.pendingDiscdb = true;
   await reselect();
@@ -438,11 +445,11 @@ function suggestedOrder(){
 }
 function autoMap(){
   const start = parseInt(document.getElementById('start-ep').value, 10) || (state.sel.suggestedStart||1);
-  state.assign = {};
+  state.assign = {}; state.range = {};   // sequential TMDB-order map has no double episodes
   suggestedOrder().forEach((tid, i) => { state.assign[start + i] = tid; });
   renderMatch();
 }
-function clearMap(){ state.assign = {}; renderMatch(); }
+function clearMap(){ state.assign = {}; state.range = {}; renderMatch(); }
 function renderMatch(){
   const sel = state.sel;
   document.getElementById('ep-head').textContent =
@@ -485,27 +492,48 @@ function renderPool(){
     const tid=+e.dataTransfer.getData('tid'); unassign(tid); };
 }
 function unassign(tid){
-  for(const ep of Object.keys(state.assign)) if(+state.assign[ep]===tid) delete state.assign[ep];
+  for(const ep of Object.keys(state.assign)) if(+state.assign[ep]===tid){
+    delete state.assign[ep]; delete state.range[ep];  // drop any double-episode span too
+  }
   renderPool(); renderEpisodes();
 }
 function renderEpisodes(){
   const sel=state.sel, host=document.getElementById('episodes'); host.innerHTML='';
+  const pad=n=>String(n).padStart(2,'0');
   // show season episodes, plus any assigned episode numbers beyond the season list
   const nums = sel.episodes.map(e=>e.number);
   const extra = Object.keys(state.assign).map(Number).filter(n=>!nums.includes(n)).sort((a,b)=>a-b);
   const rows = [...sel.episodes, ...extra.map(n=>({number:n,name:'',air:'',runtime:null,overview:'',exists:false}))];
+  // episodes swallowed by a double-episode file (e.g. e13 lives inside s02e12-e13)
+  const covered = {};
+  Object.keys(state.range).forEach(sp=>{ const s=+sp, e=+state.range[sp];
+    for(let n=s+1;n<=e;n++) covered[n]=s; });
   rows.forEach(ep=>{
     const row=document.createElement('div'); row.className='ep'; row.dataset.ep=ep.number;
+    if(covered[ep.number]!=null){   // read-only: this episode is part of an earlier double
+      const s=covered[ep.number], e=state.range[s];
+      row.style.opacity='.55';
+      row.innerHTML =
+        `<div class="epnum">s${pad(sel.season)}e${pad(ep.number)}</div>
+         <div class="epname"><div class="nm">${esc(ep.name)}</div>
+           <div class="meta">included in s${pad(sel.season)}e${pad(s)}-e${pad(e)}</div></div>
+         <div class="slot"><div class="slot-empty">part of e${pad(s)}–e${pad(e)}</div></div>`;
+      host.appendChild(row); return;
+    }
     const tid=state.assign[ep.number];
     const t = tid!=null ? state.titleById[tid] : null;
+    const end = state.range[ep.number];   // this row is the START of a double episode
     let match='';
-    if(t && ep.runtime){ const d=t.duration-ep.runtime*60;
+    if(t && ep.runtime && !end){ const d=t.duration-ep.runtime*60;
       match = Math.abs(d)>6*60 ? `<span class="pill warn">Δ${d>0?'+':''}${Math.round(d/60)}m</span>`
                                : `<span class="pill ok">✓</span>`; }
+    const epLabel = end ? `s${pad(sel.season)}e${pad(ep.number)}-e${pad(end)}`
+                        : `s${pad(sel.season)}e${pad(ep.number)}`;
+    const dbl = end ? ' <span class="pill dup" title="one file covering two episodes">double</span>' : '';
     row.innerHTML = `
-      <div class="epnum">s${String(sel.season).padStart(2,'0')}e${String(ep.number).padStart(2,'0')}</div>
+      <div class="epnum">${epLabel}</div>
       <div class="epname">
-        <div class="nm">${esc(ep.name)||'<span class="muted">(no TMDB data)</span>'}
+        <div class="nm">${esc(ep.name)||'<span class="muted">(no TMDB data)</span>'}${dbl}
           ${ep.exists?'<span class="pill nas">on NAS</span>':''} ${match}</div>
         <div class="meta">${ep.air||''}${ep.runtime?' · TMDB '+ep.runtime+'m':''}</div>
       </div>
@@ -529,7 +557,10 @@ function renderEpisodes(){
 }
 function assignTo(epNumber, tid){
   // remove tid from any other episode, then place
-  for(const ep of Object.keys(state.assign)) if(+state.assign[ep]===tid) delete state.assign[ep];
+  for(const ep of Object.keys(state.assign)) if(+state.assign[ep]===tid){
+    delete state.assign[ep]; delete state.range[ep];
+  }
+  delete state.range[epNumber];   // a manual drop overrides any double-episode span here
   state.assign[epNumber]=tid;
   renderPool(); renderEpisodes();
 }
@@ -551,8 +582,11 @@ function renderMovie(){
 
 /* ---------- STEP 4: rip ---------- */
 function currentAssignments(){
-  return Object.keys(state.assign).map(ep=>({episode:+ep, title_id:+state.assign[ep]}))
-    .sort((a,b)=>a.episode-b.episode);
+  return Object.keys(state.assign).map(ep=>{
+    const o = {episode:+ep, title_id:+state.assign[ep]};
+    if(state.range && state.range[ep]) o.episode_end = state.range[ep];
+    return o;
+  }).sort((a,b)=>a.episode-b.episode);
 }
 async function goRip(){
   showErr('');
@@ -626,8 +660,8 @@ async function pollStatus(){
 /* ---------- reset for the next disc ---------- */
 function resetWizard(){
   Object.assign(state, { drive:null, titles:[], titleById:{}, kind:'tv',
-    sel:null, selId:null, assign:{}, step:1, maxStep:1, thumbPolling:false,
-    discdb:null, discdbAssign:null, pendingDiscdb:false });
+    sel:null, selId:null, assign:{}, range:{}, step:1, maxStep:1, thumbPolling:false,
+    discdb:null, discdbAssign:null, discdbRange:null, pendingDiscdb:false });
   ['results','pool','episodes','match-banner','rip-preview','rip-progress',
    'rip-note','rip-again','thumb-progress','drive-list'].forEach(id=>document.getElementById(id).innerHTML='');
   document.getElementById('scan-status').textContent='';
