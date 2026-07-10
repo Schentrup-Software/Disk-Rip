@@ -218,12 +218,15 @@ def _parse_episode(val):
     if isinstance(val, int):
         return val, val
     s = str(val or "").strip()
-    m = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", s)   # "12-13" or "12–13"
+    m = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", s)   # "12-13", "18-21", "12–13"
     if m:
         a, b = int(m.group(1)), int(m.group(2))
         if b < a:
             a, b = b, a
-        if b - a + 1 > 3:            # wider than a 3-parter -> Play All, skip
+        # Multi-part episodes (e.g. a 4-part finale '18-21') are real and kept;
+        # a disc's 'Play All' is skipped by name in join_titles, not here. This
+        # cap is only a backstop against a pathological season-spanning range.
+        if b - a + 1 > 8:
             return None, None
         return a, b
     if s.isdigit():

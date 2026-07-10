@@ -101,6 +101,10 @@
   .assigned .x { margin-left:auto; padding-left:4px; color:var(--dim); cursor:pointer;
     font-weight:700; flex:0 0 auto; }
   .assigned .x:hover { color:var(--bad); }
+  /* manual "this title spans several episodes" control on an assigned row */
+  .spanctl { margin-top:5px; font-size:11px; color:var(--dim);
+    display:flex; align-items:center; gap:4px; }
+  .spanctl input { width:48px; padding:2px 5px; font-size:11px; }
 
   /* rip progress */
   .bar { height:8px; background:var(--panel); border-radius:5px; overflow:hidden; }
@@ -422,6 +426,7 @@ async function pollThumbs(){
 /* ---------- STEP 3: TV matching board ---------- */
 function bucketPill(b){
   if(b==='duplicate') return '<span class="pill dup">dup</span>';
+  if(b==='multi') return '<span class="pill ok">multi-ep</span>';
   if(b==='playall') return '<span class="pill playall">play-all</span>';
   if(b==='short') return '<span class="pill short">extra</span>';
   if(b==='lowres') return '<span class="pill playall">SD extra</span>';
@@ -545,6 +550,13 @@ function renderEpisodes(){
       a.ondragstart=e=>e.dataTransfer.setData('tid', t.id);
       a.querySelector('.x').onclick=()=>unassign(t.id);
       slot.appendChild(a);
+      // manual multi-episode span: rip this one title as e{ep}-e{end}
+      const sc=document.createElement('div'); sc.className='spanctl';
+      sc.title='For one title that contains several episodes (e.g. a combined finale)';
+      sc.innerHTML=`spans to e<input type="number" min="${ep.number}" value="${end||ep.number}">`;
+      const inp=sc.querySelector('input');
+      inp.onchange=()=>setSpan(ep.number, inp.value);
+      slot.appendChild(sc);
     } else {
       slot.innerHTML='<div class="slot-empty">drop title here</div>';
     }
@@ -562,6 +574,16 @@ function assignTo(epNumber, tid){
   }
   delete state.range[epNumber];   // a manual drop overrides any double-episode span here
   state.assign[epNumber]=tid;
+  renderPool(); renderEpisodes();
+}
+function setSpan(ep, end){
+  // mark the title at episode `ep` as one file spanning ep..end (e.g. s03e18-e21)
+  ep=+ep; end=parseInt(end,10);
+  if(!end || end<=ep){ delete state.range[ep]; }
+  else {
+    state.range[ep]=end;
+    for(let n=ep+1;n<=end;n++){ delete state.assign[n]; delete state.range[n]; }  // swallowed
+  }
   renderPool(); renderEpisodes();
 }
 
@@ -582,8 +604,12 @@ function renderMovie(){
 
 /* ---------- STEP 4: rip ---------- */
 function currentAssignments(){
-  return Object.keys(state.assign).map(ep=>{
-    const o = {episode:+ep, title_id:+state.assign[ep]};
+  // episodes swallowed by a double (e.g. e20 inside e19-e20) are not ripped on their own
+  const covered = new Set();
+  Object.keys(state.range).forEach(sp=>{ const s=+sp, e=+state.range[sp];
+    for(let n=s+1;n<=e;n++) covered.add(n); });
+  return Object.keys(state.assign).map(Number).filter(ep=>!covered.has(ep)).map(ep=>{
+    const o = {episode:ep, title_id:+state.assign[ep]};
     if(state.range && state.range[ep]) o.episode_end = state.range[ep];
     return o;
   }).sort((a,b)=>a.episode-b.episode);
@@ -599,8 +625,15 @@ async function goRip(){
   if(!preview.length){ host.innerHTML='<div class="banner warn">Nothing assigned to rip.</div>'; }
   else {
     const skip = preview.filter(p=>p.exists).length;
+    const pad=n=>String(n).padStart(2,'0');
+    const label=p=>{
+      if(!p.episode) return '';
+      const span = 's'+pad(state.sel.season)+'e'+pad(p.episode)
+        + (p.episode_end ? '-e'+pad(p.episode_end) : '');  // double episode
+      return span+' ';
+    };
     host.innerHTML = (skip?`<div class="banner warn">${skip} target(s) already exist and will be skipped.</div>`:'')
-      + preview.map(p=>`<div class="riprow">${p.episode?('s'+String(state.sel.season).padStart(2,'0')+'e'+String(p.episode).padStart(2,'0')+' '):''}
+      + preview.map(p=>`<div class="riprow">${label(p)}
         → <code>${esc(p.target.split('\\').pop())}</code> ${p.exists?'<span class="pill nas">skip</span>':''}</div>`).join('');
   }
   goStep(4);

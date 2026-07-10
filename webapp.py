@@ -44,6 +44,8 @@ class App:
         self.movie = None         # dr.MovieProposal
         self.ripjob = None        # dict: progress state for the current rip
         self.thumbjob = None      # dict: thumbnail prefetch progress
+        self.discdb_ep_titles = set()    # title ids TheDiscDb mapped to an episode
+        self.discdb_multi_titles = set() # ...of those, the ones spanning a range
         self.lock = threading.Lock()
         self.thumbnailer = Thumbnailer(
             self.cfg.get("ffmpeg"), self.cfg["work_dir"],
@@ -62,7 +64,11 @@ class App:
                      and bool(getattr(self.disc, "device", "")))
         rows = []
         for t in self.disc.titles:
-            if t.duration >= self.movie_min:
+            if t.id in self.discdb_multi_titles:
+                bucket = "multi"       # community-confirmed multi-part (e.g. e18-e21)
+            elif t.id in self.discdb_ep_titles:
+                bucket = "episode"     # community-confirmed episode - never a Play-All
+            elif t.duration >= self.movie_min:
                 bucket = "playall"
             elif t.duration < self.min_len:
                 bucket = "short"
@@ -87,7 +93,7 @@ class App:
                 # duplicates share their representative's frame (same episode) so
                 # the browser fetches one image per group, not one per title
                 "thumb": (f"/api/thumb?title={rep_of.get(t.id, t.id)}&pos=mid"
-                          if thumbs_on and bucket in ("episode", "duplicate") else None),
+                          if thumbs_on and bucket in ("episode", "duplicate", "multi") else None),
             })
         return rows
 
@@ -129,6 +135,8 @@ class App:
         community's per-title mapping to one title per episode (preferring our
         representative when they mapped an intro/no-intro pair) so the board can
         pre-fill directly."""
+        self.discdb_ep_titles = set()
+        self.discdb_multi_titles = set()
         try:
             match = discdb.identify(self.disc, self.cfg)
         except Exception:
@@ -156,8 +164,21 @@ class App:
             cur = best.get(key)
             if cur is None or score(a) > score(cur):
                 best[key] = a
-        match["assignments"] = sorted(
-            best.values(), key=lambda a: (a.get("season") or 0, a["episode"]))
+        # a double (e19-e20) already contains its later episodes, so drop any
+        # separate assignment for one they swallow (e.g. a lone "e20 commentary")
+        covered = set()
+        for a in best.values():
+            if a.get("episode_end"):
+                for n in range(a["episode"] + 1, a["episode_end"] + 1):
+                    covered.add((a.get("season"), n))
+        final = sorted(
+            (a for k, a in best.items() if k not in covered),
+            key=lambda a: (a.get("season") or 0, a["episode"]))
+        match["assignments"] = final
+        # remember which of our titles TheDiscDb actually mapped, so title_rows()
+        # doesn't mislabel a mapped-but-long finale as a 'Play All'
+        self.discdb_ep_titles = {a["title_id"] for a in final}
+        self.discdb_multi_titles = {a["title_id"] for a in final if a.get("episode_end")}
         return match
 
     def _prefetch_thumbs(self, disc):
