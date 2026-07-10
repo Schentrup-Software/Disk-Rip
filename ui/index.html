@@ -102,9 +102,12 @@
     font-weight:700; flex:0 0 auto; }
   .assigned .x:hover { color:var(--bad); }
   /* manual "this title spans several episodes" control on an assigned row */
-  .spanctl { margin-top:5px; font-size:11px; color:var(--dim);
-    display:flex; align-items:center; gap:4px; }
-  .spanctl input { width:48px; padding:2px 5px; font-size:11px; }
+  .spanctl { margin-top:6px; font-size:11px; color:var(--dim);
+    display:flex; align-items:center; gap:6px; }
+  .spanctl select { padding:3px 22px 3px 7px; font-size:11px; border-radius:6px; }
+  .linklike { color:var(--accent); cursor:pointer; user-select:none;
+    border-bottom:1px dashed var(--line); }
+  .linklike:hover { border-bottom-color:var(--accent); }
 
   /* rip progress */
   .bar { height:8px; background:var(--panel); border-radius:5px; overflow:hidden; }
@@ -439,10 +442,10 @@ function groupDot(t){
   const hue = (t.group*57)%360;
   return `<span class="gdot" title="duplicate group ${t.group}" style="background:hsl(${hue} 70% 55%)"></span>`;
 }
-function titleChipHTML(t){
+function titleChipHTML(t, bucketOverride){
   const img = t.thumb ? `<img class="thumb" src="${t.thumb}" loading="lazy" onerror="this.remove()">` : '';
   return `${img}${groupDot(t)}<span class="mono">t${String(t.id).padStart(2,'0')}</span>` +
-    `<b>${t.hms}</b> <span class="mutedres">${esc(t.resolution)}</span> ${bucketPill(t.bucket)}`;
+    `<b>${t.hms}</b> <span class="mutedres">${esc(t.resolution)}</span> ${bucketPill(bucketOverride||t.bucket)}`;
 }
 function suggestedOrder(){
   // disc titles in the server's suggested episode order (title ids)
@@ -513,6 +516,7 @@ function renderEpisodes(){
   const covered = {};
   Object.keys(state.range).forEach(sp=>{ const s=+sp, e=+state.range[sp];
     for(let n=s+1;n<=e;n++) covered[n]=s; });
+  const maxEp = rows.length ? Math.max(...rows.map(r=>r.number)) : 0;
   rows.forEach(ep=>{
     const row=document.createElement('div'); row.className='ep'; row.dataset.ep=ep.number;
     if(covered[ep.number]!=null){   // read-only: this episode is part of an earlier double
@@ -534,7 +538,7 @@ function renderEpisodes(){
                                : `<span class="pill ok">✓</span>`; }
     const epLabel = end ? `s${pad(sel.season)}e${pad(ep.number)}-e${pad(end)}`
                         : `s${pad(sel.season)}e${pad(ep.number)}`;
-    const dbl = end ? ' <span class="pill dup" title="one file covering two episodes">double</span>' : '';
+    const dbl = end ? ` <span class="pill dup" title="one file covering e${pad(ep.number)}–e${pad(end)}">multi</span>` : '';
     row.innerHTML = `
       <div class="epnum">${epLabel}</div>
       <div class="epname">
@@ -546,17 +550,13 @@ function renderEpisodes(){
     const slot=row.querySelector('.slot');
     if(t){
       const a=document.createElement('div'); a.className='assigned'; a.draggable=true;
-      a.dataset.tid=t.id; a.innerHTML=`${titleChipHTML(t)}<span class="x" title="unassign">✕</span>`;
+      // a spanned title is a real episode, not a Play-All - badge it accordingly
+      a.dataset.tid=t.id;
+      a.innerHTML=`${titleChipHTML(t, end?'multi':null)}<span class="x" title="unassign">✕</span>`;
       a.ondragstart=e=>e.dataTransfer.setData('tid', t.id);
       a.querySelector('.x').onclick=()=>unassign(t.id);
       slot.appendChild(a);
-      // manual multi-episode span: rip this one title as e{ep}-e{end}
-      const sc=document.createElement('div'); sc.className='spanctl';
-      sc.title='For one title that contains several episodes (e.g. a combined finale)';
-      sc.innerHTML=`spans to e<input type="number" min="${ep.number}" value="${end||ep.number}">`;
-      const inp=sc.querySelector('input');
-      inp.onchange=()=>setSpan(ep.number, inp.value);
-      slot.appendChild(sc);
+      slot.appendChild(spanControl(ep.number, end, maxEp));
     } else {
       slot.innerHTML='<div class="slot-empty">drop title here</div>';
     }
@@ -585,6 +585,27 @@ function setSpan(ep, end){
     for(let n=ep+1;n<=end;n++){ delete state.assign[n]; delete state.range[n]; }  // swallowed
   }
   renderPool(); renderEpisodes();
+}
+// The multi-episode control for an assigned row: a link until the user opts in,
+// then a dropdown of every later episode this one title should cover.
+function spanControl(ep, end, maxEp){
+  const pad=n=>String(n).padStart(2,'0');
+  const wrap=document.createElement('div'); wrap.className='spanctl';
+  function showPicker(selected){
+    let opts=`<option value="${ep}">— single episode —</option>`;
+    for(let n=ep+1;n<=maxEp;n++) opts+=`<option value="${n}">ends at e${pad(n)}</option>`;
+    wrap.innerHTML=`<span class="muted">multi-episode:</span><select></select>`;
+    const s=wrap.querySelector('select');
+    s.innerHTML=opts; s.value=String(selected);
+    s.onchange=()=>setSpan(ep, s.value);
+  }
+  if(maxEp<=ep){ return wrap; }               // nothing after this episode to span into
+  if(end){ showPicker(end); }                 // already a span -> show the dropdown
+  else {                                       // single -> offer the opt-in link
+    wrap.innerHTML=`<a class="linklike" role="button">＋ change to multi-episode</a>`;
+    wrap.querySelector('a').onclick=()=>showPicker(ep);
+  }
+  return wrap;
 }
 
 /* ---------- STEP 3b: movie ---------- */
