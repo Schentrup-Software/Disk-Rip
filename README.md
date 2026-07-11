@@ -32,7 +32,7 @@ For how each of these works under the hood, see **[HOW-IT-WORKS.md](HOW-IT-WORKS
 
 ## Demo
 
-A static, backend-free demo of the web UI lives in [`demo/`](demo/). It runs the
+A static demo of the app lives [here](https://schentrup-software.github.io/Disk-Rip/demo/). It runs the
 **real** UI with mocked responses so you can click through four cases by picking a
 drive: a movie found in TheDiscDb, a movie that isn't, a TV disc found in
 TheDiscDb (with a double episode), and a TV disc that isn't.
