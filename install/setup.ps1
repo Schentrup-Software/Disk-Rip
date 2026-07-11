@@ -4,11 +4,11 @@
   Installs the prerequisites (Python, MakeMKV, ffmpeg-with-libbluray) via winget,
   finds their executables, and writes config.json.
 
-  Usage (double-clickable via setup.cmd, or):
-    powershell -ExecutionPolicy Bypass -File setup.ps1
+  Usage (double-clickable via install\setup.cmd, or from the repo root):
+    powershell -ExecutionPolicy Bypass -File install\setup.ps1
 
   Unattended / re-run with values supplied:
-    powershell -ExecutionPolicy Bypass -File setup.ps1 -TmdbKey abc123 `
+    powershell -ExecutionPolicy Bypass -File install\setup.ps1 -TmdbKey abc123 `
         -TvRoot \\SERVER\media\tv -MovieRoot \\SERVER\media\movies
 
   Re-running is safe: existing config.json values are used as the defaults.
@@ -25,9 +25,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$here = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (-not $ConfigPath) { $ConfigPath = Join-Path $here 'config.json' }
-$examplePath = Join-Path $here 'config.example.json'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path   # install/
+$root = Split-Path -Parent $here                           # repo root (config.json, src/, ui/)
+if (-not $ConfigPath) { $ConfigPath = Join-Path $root 'config.json' }
+$examplePath = Join-Path $root 'config.example.json'
 
 function Info($m)  { Write-Host $m -ForegroundColor Cyan }
 function Ok($m)    { Write-Host "  OK  $m" -ForegroundColor Green }
@@ -105,7 +106,7 @@ if ($ffmpeg) { Ok "ffmpeg: $ffmpeg" } else { Warn "ffmpeg.exe not found - thumbn
 Info "`nConfiguring ..."
 $example = Load-Json $examplePath
 $existing = Load-Json $ConfigPath
-if (-not $example) { Fail "config.example.json not found next to setup.ps1" }
+if (-not $example) { Fail "config.example.json not found in the repo root ($root)" }
 
 # start from example (all keys), overlay existing values so nothing is lost
 $cfg = [ordered]@{}
@@ -119,7 +120,7 @@ $curKey = Cur 'tmdb_api_key'; if ($curKey -like 'PASTE_*') { $curKey = '' }
 if ($TmdbKey)   { $cfg['tmdb_api_key'] = $TmdbKey } else { $cfg['tmdb_api_key'] = Prompt-Default 'TMDB v3 API key (themoviedb.org)' $curKey }
 if ($TvRoot)    { $cfg['tv_root']    = $TvRoot }    else { $cfg['tv_root']    = Prompt-Default 'TV library path'    (Cur 'tv_root') }
 if ($MovieRoot) { $cfg['movie_root'] = $MovieRoot } else { $cfg['movie_root'] = Prompt-Default 'Movie library path' (Cur 'movie_root') }
-$defWork = if (Cur 'work_dir') { Cur 'work_dir' } else { Join-Path $here '_work' }
+$defWork = if (Cur 'work_dir') { Cur 'work_dir' } else { Join-Path $root '_work' }
 if ($WorkDir)   { $cfg['work_dir']   = $WorkDir }   else { $cfg['work_dir']   = Prompt-Default 'Local scratch/work dir' $defWork }
 if ($makemkv)   { $cfg['makemkvcon'] = $makemkv }
 if ($ffmpeg)    { $cfg['ffmpeg']     = $ffmpeg }
@@ -162,5 +163,5 @@ Info "`n=== Done ===`n"
 Write-Host "Next:" -ForegroundColor Cyan
 Write-Host "  1. If MakeMKV isn't registered yet, open it once and enter your key."
 Write-Host "  2. Close the MakeMKV window (it holds the drive), insert a disc, then run:"
-Write-Host "       py webapp.py        # web UI (drag-drop matching)" -ForegroundColor White
-Write-Host "       py diskrip.py       # or the terminal version" -ForegroundColor White
+Write-Host "       py src\webapp.py    # web UI (drag-drop matching)" -ForegroundColor White
+Write-Host "       py src\diskrip.py   # or the terminal version" -ForegroundColor White

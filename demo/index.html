@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk-Rip — Live Demo</title>
+<style>
+  /* self-contained styling for the demo ribbon; the real UI injects its own CSS */
+  body { margin: 0; background: #0f1216; color: #e6edf3;
+    font: 14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif; }
+  #demo-bar { background: #12161c; border-bottom: 1px solid #2a323d;
+    padding: 10px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+  #demo-bar .tag { font-weight: 700; letter-spacing: .5px; color: #4a9eff;
+    text-transform: uppercase; font-size: 12px; }
+  #demo-bar .note { color: #8b98a5; font-size: 12px; }
+  #demo-bar .cases { display: flex; flex-wrap: wrap; gap: 6px; }
+  #demo-bar .case { font-size: 12px; color: #e6edf3; background: #1e242d;
+    border: 1px solid #2a323d; border-radius: 20px; padding: 3px 10px; white-space: nowrap; }
+  #demo-bar .case b { color: #4a9eff; }
+  #demo-bar a { color: #4a9eff; text-decoration: none; font-size: 12px; }
+  #demo-bar a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div id="demo-bar">
+    <span class="tag">Demo</span>
+    <span class="note">no backend — every action is mocked. Pick a drive to explore each case:</span>
+    <span class="cases">
+      <span class="case"><b>Drive 0</b> movie · in TheDiscDb</span>
+      <span class="case"><b>Drive 1</b> movie · not in DB</span>
+      <span class="case"><b>Drive 2</b> TV · in TheDiscDb</span>
+      <span class="case"><b>Drive 3</b> TV · not in DB</span>
+    </span>
+    <a href="https://github.com/Schentrup-Software/Disk-Rip" target="_blank" rel="noopener">source ↗</a>
+  </div>
+  <div id="app"></div>
+  <script src="demo.js"></script>
+</body>
+</html>

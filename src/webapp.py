@@ -26,7 +26,8 @@ from thumbs import Thumbnailer
 
 HOST = "127.0.0.1"
 PORT = 8765
-HERE = Path(__file__).parent
+HERE = Path(__file__).parent      # src/
+ROOT = HERE.parent                # repo root (holds config.json, ui/)
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         route = parsed.path
         if route in ("/", "/index.html"):
-            return self._send_file(HERE / "ui" / "index.html", "text/html; charset=utf-8")
+            return self._send_file(ROOT / "ui" / "index.html", "text/html; charset=utf-8")
         if route == "/api/rip/status":
             return self._dispatch("api_rip_status", {})
         if route == "/api/thumbs/status":
@@ -483,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Local web UI for Disk-Rip.")
-    ap.add_argument("--config", default=str(HERE / "config.json"))
+    ap.add_argument("--config", default=str(ROOT / "config.json"))
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()

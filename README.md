@@ -20,7 +20,7 @@ TV:      Show (Year) [imdb-ttID]/Season N/Show (Year) - s01e01.mkv
   community already catalogued your exact disc, the show, season, and per-episode
   title mapping are filled in automatically; you just review and rip. Unknown
   discs fall back to the normal flow.
-- **TMDB identification** with a match picker (e.g. the 2005 vs 2024 *Avatar*).
+- **TMDB identification** with a match picker (e.g. the 2005 vs 2024 _Avatar_).
 - **Handles messy TV Blu-rays** — excludes "Play All" titles, extras, and
   duplicate playlists; orders episodes using the disc's own Play-All; resumes
   across multi-disc sets without clobbering what you already ripped.
@@ -29,6 +29,13 @@ TV:      Show (Year) [imdb-ttID]/Season N/Show (Year) - s01e01.mkv
 - **Never overwrites** existing files.
 
 For how each of these works under the hood, see **[HOW-IT-WORKS.md](HOW-IT-WORKS.md)**.
+
+## Demo
+
+A static, backend-free demo of the web UI lives in [`demo/`](demo/). It runs the
+**real** UI with mocked responses so you can click through four cases by picking a
+drive: a movie found in TheDiscDb, a movie that isn't, a TV disc found in
+TheDiscDb (with a double episode), and a TV disc that isn't.
 
 ## Requirements
 
@@ -40,8 +47,8 @@ For how each of these works under the hood, see **[HOW-IT-WORKS.md](HOW-IT-WORKS
 ## Setup
 
 1. Download or clone this repository.
-2. Double-click **`setup.cmd`** (or run
-   `powershell -ExecutionPolicy Bypass -File setup.ps1`).
+2. Double-click **`install\setup.cmd`** (or run
+   `powershell -ExecutionPolicy Bypass -File install\setup.ps1`).
    It installs the prerequisites via **winget**, asks for your TMDB key and
    library paths, writes `config.json`, and verifies everything works.
 3. **Register MakeMKV** — open the MakeMKV app once and enter your license, or the
@@ -58,9 +65,9 @@ edit `config.json`.
    For thumbnails, also install an ffmpeg build **with libbluray**:
    `winget install Gyan.FFmpeg`.
 2. Copy `config.example.json` to `config.json` and set at least `tmdb_api_key`,
-   `tv_root`, `movie_root`, and the `makemkvcon` / `ffmpeg` paths.
-   See the [config reference](HOW-IT-WORKS.md#configuration-reference).
-</details>
+`tv_root`, `movie_root`, and the `makemkvcon` / `ffmpeg` paths.
+See the [config reference](HOW-IT-WORKS.md#configuration-reference).
+ </details>
 
 ## Usage
 
@@ -70,7 +77,7 @@ edit `config.json`.
 ### Web UI (recommended)
 
 ```powershell
-py webapp.py
+py src\webapp.py
 ```
 
 Opens <http://127.0.0.1:8765>. Pick the drive → **Scan** → confirm the show →
@@ -84,10 +91,10 @@ every episode already assigned — so you usually just click **Rip**.
 ### CLI
 
 ```powershell
-py diskrip.py                # scan the disc, confirm, rip
-py diskrip.py --dry-run      # show the plan, rip nothing
-py diskrip.py --list-drives  # list optical drives
-py diskrip.py --yes          # unattended (no confirmation)
+py src\diskrip.py                # scan the disc, confirm, rip
+py src\diskrip.py --dry-run      # show the plan, rip nothing
+py src\diskrip.py --list-drives  # list optical drives
+py src\diskrip.py --yes          # unattended (no confirmation)
 ```
 
 The full flag list and the interactive commands are in
@@ -95,7 +102,7 @@ The full flag list and the interactive commands are in
 
 ## Configuration
 
-`setup.cmd` writes `config.json` for you. The keys you'll usually set are
+`install\setup.cmd` writes `config.json` for you. The keys you'll usually set are
 `tmdb_api_key`, `tv_root`, and `movie_root`; everything else has sensible
 defaults. See `config.example.json` and the
 [full reference](HOW-IT-WORKS.md#configuration-reference).

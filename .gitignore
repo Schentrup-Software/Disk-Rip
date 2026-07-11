@@ -12,3 +12,6 @@ __pycache__
 # MakeMKV libmmbd copied in next to ffmpeg for AACS (regenerated automatically)
 libaacs.dll
 libbdplus.dll
+
+# Static demo site assembled by the GitHub Pages workflow (CI only)
+_site

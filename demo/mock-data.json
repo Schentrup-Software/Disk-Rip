@@ -1,0 +1,209 @@
+{
+  "drives": [
+    {"index": 0, "name": "BD-ROM Drive (D:)",  "label": "Blade Runner 2049",              "loaded": true},
+    {"index": 1, "name": "BD-ROM Drive (E:)",  "label": "The Matrix",                      "loaded": true},
+    {"index": 2, "name": "BD-ROM Drive (F:)",  "label": "Avatar Book 2: Earth - Disc 5",   "loaded": true},
+    {"index": 3, "name": "DVD-ROM Drive (G:)", "label": "The Office - Season 1 Disc 1",    "loaded": true}
+  ],
+
+  "scenarios": {
+
+    "0": {
+      "kind": "movie",
+      "note": "Movie found in TheDiscDb",
+      "scan": {
+        "label": "BLADE RUNNER 2049",
+        "type": "movie",
+        "query": "Blade Runner 2049",
+        "hints": {"season": null, "disc": null},
+        "titles": [
+          {"id": 0, "duration": 9800, "hms": "2:43:20", "resolution": "1920x1080", "chapters": 34, "segmap": "1", "bucket": "episode",  "group": null, "isRep": true},
+          {"id": 1, "duration": 1123, "hms": "18:43",   "resolution": "1920x1080", "chapters": 1,  "segmap": "5", "bucket": "short",    "group": null, "isRep": false},
+          {"id": 2, "duration": 154,  "hms": "2:34",    "resolution": "1920x1080", "chapters": 1,  "segmap": "6", "bucket": "short",    "group": null, "isRep": false}
+        ],
+        "discdb": {
+          "matched": true, "kind": "movie", "tmdb": 335984, "imdb": "tt1856101",
+          "title": "Blade Runner 2049", "year": 2017,
+          "release": "Blade Runner 2049 (4K UHD + Blu-ray)", "disc": "Disc 2 (Blu-ray)",
+          "season": null, "assignments": []
+        }
+      },
+      "search": {"movie": [
+        {"id": 335984, "name": "Blade Runner 2049", "year": "2017", "overview": "Thirty years after the events of the first film, a new blade runner unearths a long-buried secret."}
+      ]},
+      "select": {
+        "kind": "movie", "title": "Blade Runner 2049", "year": "2017", "imdb": "tt1856101",
+        "folder": "Blade Runner 2049 (2017) [imdb-tt1856101]",
+        "file": "Blade Runner 2049 (2017) [imdb-tt1856101] - 1080p.mkv",
+        "runtime": 164, "mainTitleId": 0,
+        "target": "\\\\NAS\\media\\movies\\Blade Runner 2049 (2017) [imdb-tt1856101]\\Blade Runner 2049 (2017) [imdb-tt1856101] - 1080p.mkv",
+        "exists": false
+      }
+    },
+
+    "1": {
+      "kind": "movie",
+      "note": "Movie NOT in TheDiscDb - identify via TMDB search",
+      "scan": {
+        "label": "THE_MATRIX",
+        "type": "movie",
+        "query": "The Matrix",
+        "hints": {"season": null, "disc": null},
+        "titles": [
+          {"id": 0, "duration": 8160, "hms": "2:16:00", "resolution": "1920x1080", "chapters": 39, "segmap": "1", "bucket": "episode", "group": null, "isRep": true},
+          {"id": 1, "duration": 372,  "hms": "6:12",    "resolution": "1920x1080", "chapters": 1,  "segmap": "4", "bucket": "short",   "group": null, "isRep": false}
+        ],
+        "discdb": null
+      },
+      "search": {"movie": [
+        {"id": 603, "name": "The Matrix", "year": "1999", "overview": "A computer hacker learns from mysterious rebels about the true nature of his reality and his role in the war against its controllers."},
+        {"id": 604, "name": "The Matrix Reloaded", "year": "2003", "overview": "Neo and the rebel leaders estimate they have 72 hours until Zion falls under siege to the Machine Army."},
+        {"id": 605, "name": "The Matrix Revolutions", "year": "2003", "overview": "The human city of Zion defends itself against the massive invasion of the machines."}
+      ]},
+      "select": {
+        "kind": "movie", "title": "The Matrix", "year": "1999", "imdb": "tt0133093",
+        "folder": "The Matrix (1999) [imdb-tt0133093]",
+        "file": "The Matrix (1999) [imdb-tt0133093] - 1080p.mkv",
+        "runtime": 136, "mainTitleId": 0,
+        "target": "\\\\NAS\\media\\movies\\The Matrix (1999) [imdb-tt0133093]\\The Matrix (1999) [imdb-tt0133093] - 1080p.mkv",
+        "exists": false
+      }
+    },
+
+    "2": {
+      "kind": "tv",
+      "note": "TV found in TheDiscDb - board pre-filled, incl. a double episode",
+      "scan": {
+        "label": "AVATAR BOOK TWO EARTH DISC 5",
+        "type": "tv",
+        "query": "Avatar The Last Airbender",
+        "hints": {"season": 2, "disc": 5},
+        "titles": [
+          {"id": 2, "duration": 1473, "hms": "24:33", "resolution": "1920x1080", "chapters": 8, "segmap": "1062",           "bucket": "episode",   "group": null, "isRep": true},
+          {"id": 3, "duration": 1473, "hms": "24:33", "resolution": "1920x1080", "chapters": 8, "segmap": "1077",           "bucket": "episode",   "group": null, "isRep": true},
+          {"id": 4, "duration": 1473, "hms": "24:33", "resolution": "1920x1080", "chapters": 8, "segmap": "1078",           "bucket": "episode",   "group": null, "isRep": true},
+          {"id": 5, "duration": 2787, "hms": "46:27", "resolution": "1920x1080", "chapters": 16, "segmap": "1085,1087,1088", "bucket": "multi",     "group": null, "isRep": true},
+          {"id": 6, "duration": 1472, "hms": "24:32", "resolution": "1920x1080", "chapters": 8, "segmap": "1080",           "bucket": "episode",   "group": null, "isRep": true},
+          {"id": 7, "duration": 1475, "hms": "24:35", "resolution": "1920x1080", "chapters": 8, "segmap": "1081",           "bucket": "episode",   "group": null, "isRep": true},
+          {"id": 8, "duration": 1472, "hms": "24:32", "resolution": "1920x1080", "chapters": 8, "segmap": "1082",           "bucket": "episode",   "group": null, "isRep": true},
+          {"id": 0, "duration": 1440, "hms": "24:00", "resolution": "1920x1080", "chapters": 1, "segmap": "1093,1062",      "bucket": "duplicate", "group": 0, "isRep": false},
+          {"id": 1, "duration": 1441, "hms": "24:01", "resolution": "1920x1080", "chapters": 1, "segmap": "1093,1077",      "bucket": "duplicate", "group": 1, "isRep": false},
+          {"id": 20, "duration": 11630, "hms": "3:13:50", "resolution": "1920x1080", "chapters": 8, "segmap": "1062,1077,1078,1087,1088,1080,1081,1082", "bucket": "playall", "group": null, "isRep": false},
+          {"id": 21, "duration": 300,  "hms": "5:00",  "resolution": "720x480",   "chapters": 1, "segmap": "1100",          "bucket": "short",     "group": null, "isRep": false},
+          {"id": 22, "duration": 1471, "hms": "24:31", "resolution": "720x480",   "chapters": 1, "segmap": "1083",          "bucket": "lowres",    "group": null, "isRep": false}
+        ],
+        "discdb": {
+          "matched": true, "kind": "tv", "tmdb": 246, "imdb": "tt0417299",
+          "title": "Avatar: The Last Airbender", "year": 2005,
+          "release": "The Complete Series", "disc": "Book Two: Earth Disc Five",
+          "season": 2,
+          "assignments": [
+            {"title_id": 2, "season": 2, "episode": 9,  "episode_end": null, "name": "Bitter Work"},
+            {"title_id": 3, "season": 2, "episode": 10, "episode_end": null, "name": "The Library"},
+            {"title_id": 4, "season": 2, "episode": 11, "episode_end": null, "name": "The Desert"},
+            {"title_id": 5, "season": 2, "episode": 12, "episode_end": 13,   "name": "The Serpent's Pass, The Drill"},
+            {"title_id": 6, "season": 2, "episode": 14, "episode_end": null, "name": "City of Walls and Secrets"},
+            {"title_id": 7, "season": 2, "episode": 15, "episode_end": null, "name": "The Tales of Ba Sing Se"},
+            {"title_id": 8, "season": 2, "episode": 16, "episode_end": null, "name": "Appa's Lost Days"}
+          ]
+        }
+      },
+      "search": {"tv": [
+        {"id": 246, "name": "Avatar: The Last Airbender", "year": "2005", "overview": "In a war-torn world of elemental magic, a young boy reawakens to undertake a dangerous mystic quest to fulfill his destiny as the Avatar."}
+      ]},
+      "select": {
+        "kind": "tv", "title": "Avatar: The Last Airbender", "year": "2005", "imdb": "tt0417299",
+        "showFolder": "Avatar - The Last Airbender (2005) [imdb-tt0417299]",
+        "season": 2, "seasonCount": 20, "suggestedStart": 9,
+        "existing": [1, 2, 3, 4, 5, 6, 7, 8],
+        "episodes": [
+          {"number": 1,  "name": "The Avatar State",           "air": "2006-03-17", "runtime": 25, "overview": "", "exists": true},
+          {"number": 2,  "name": "The Cave of Two Lovers",      "air": "2006-03-24", "runtime": 25, "overview": "", "exists": true},
+          {"number": 3,  "name": "Return to Omashu",            "air": "2006-03-31", "runtime": 25, "overview": "", "exists": true},
+          {"number": 4,  "name": "The Swamp",                   "air": "2006-04-14", "runtime": 24, "overview": "", "exists": true},
+          {"number": 5,  "name": "Avatar Day",                  "air": "2006-04-28", "runtime": 25, "overview": "", "exists": true},
+          {"number": 6,  "name": "The Blind Bandit",            "air": "2006-05-05", "runtime": 25, "overview": "", "exists": true},
+          {"number": 7,  "name": "Zuko Alone",                  "air": "2006-05-12", "runtime": 25, "overview": "", "exists": true},
+          {"number": 8,  "name": "The Chase",                   "air": "2006-05-26", "runtime": 25, "overview": "", "exists": true},
+          {"number": 9,  "name": "Bitter Work",                 "air": "2006-06-02", "runtime": 25, "overview": "", "exists": false},
+          {"number": 10, "name": "The Library",                 "air": "2006-07-14", "runtime": 25, "overview": "", "exists": false},
+          {"number": 11, "name": "The Desert",                  "air": "2006-07-14", "runtime": 25, "overview": "", "exists": false},
+          {"number": 12, "name": "The Serpent's Pass",          "air": "2006-09-15", "runtime": 25, "overview": "", "exists": false},
+          {"number": 13, "name": "The Drill",                   "air": "2006-09-15", "runtime": 25, "overview": "", "exists": false},
+          {"number": 14, "name": "City of Walls and Secrets",   "air": "2006-09-22", "runtime": 25, "overview": "", "exists": false},
+          {"number": 15, "name": "The Tales of Ba Sing Se",     "air": "2006-09-29", "runtime": 25, "overview": "", "exists": false},
+          {"number": 16, "name": "Appa's Lost Days",            "air": "2006-10-13", "runtime": 25, "overview": "", "exists": false},
+          {"number": 17, "name": "Lake Laogai",                 "air": "2006-11-03", "runtime": 25, "overview": "", "exists": false},
+          {"number": 18, "name": "The Earth King",              "air": "2006-11-17", "runtime": 25, "overview": "", "exists": false},
+          {"number": 19, "name": "The Guru",                    "air": "2006-12-01", "runtime": 25, "overview": "", "exists": false},
+          {"number": 20, "name": "The Crossroads of Destiny",   "air": "2006-12-01", "runtime": 25, "overview": "", "exists": false}
+        ],
+        "suggested": [
+          {"title_id": 2, "episode": 9},  {"title_id": 3, "episode": 10}, {"title_id": 4, "episode": 11},
+          {"title_id": 5, "episode": 12}, {"title_id": 6, "episode": 14}, {"title_id": 7, "episode": 15},
+          {"title_id": 8, "episode": 16}
+        ]
+      },
+      "meta": {
+        "fileShow": "Avatar - The Last Airbender (2005)",
+        "seasonDir": "\\\\NAS\\media\\tv\\Avatar - The Last Airbender (2005) [imdb-tt0417299]\\Season 2\\",
+        "existing": [1, 2, 3, 4, 5, 6, 7, 8],
+        "episodes": {
+          "9": "Bitter Work", "10": "The Library", "11": "The Desert", "12": "The Serpent's Pass",
+          "13": "The Drill", "14": "City of Walls and Secrets", "15": "The Tales of Ba Sing Se",
+          "16": "Appa's Lost Days", "17": "Lake Laogai", "18": "The Earth King", "19": "The Guru",
+          "20": "The Crossroads of Destiny"
+        }
+      }
+    },
+
+    "3": {
+      "kind": "tv",
+      "note": "TV NOT in TheDiscDb - identify + auto-map by disc order",
+      "scan": {
+        "label": "THE OFFICE S1 D1",
+        "type": "tv",
+        "query": "The Office",
+        "hints": {"season": 1, "disc": 1},
+        "titles": [
+          {"id": 0, "duration": 1332, "hms": "22:12", "resolution": "1920x1080", "chapters": 6, "segmap": "801", "bucket": "episode", "group": null, "isRep": true},
+          {"id": 1, "duration": 1305, "hms": "21:45", "resolution": "1920x1080", "chapters": 6, "segmap": "802", "bucket": "episode", "group": null, "isRep": true},
+          {"id": 2, "duration": 1320, "hms": "22:00", "resolution": "1920x1080", "chapters": 6, "segmap": "803", "bucket": "episode", "group": null, "isRep": true},
+          {"id": 3, "duration": 1298, "hms": "21:38", "resolution": "1920x1080", "chapters": 6, "segmap": "804", "bucket": "episode", "group": null, "isRep": true},
+          {"id": 4, "duration": 1311, "hms": "21:51", "resolution": "1920x1080", "chapters": 6, "segmap": "805", "bucket": "episode", "group": null, "isRep": true},
+          {"id": 5, "duration": 1289, "hms": "21:29", "resolution": "1920x1080", "chapters": 6, "segmap": "806", "bucket": "episode", "group": null, "isRep": true},
+          {"id": 6, "duration": 540,  "hms": "9:00",  "resolution": "1920x1080", "chapters": 1, "segmap": "810", "bucket": "short",   "group": null, "isRep": false}
+        ],
+        "discdb": null
+      },
+      "search": {"tv": [
+        {"id": 2316, "name": "The Office", "year": "2005", "overview": "A mockumentary on a group of typical office workers, where the workday consists of ego clashes, inappropriate behavior, and tedium."},
+        {"id": 2996, "name": "The Office", "year": "2001", "overview": "The lives of the office employees of a paper company in Slough, England (the original UK series)."}
+      ]},
+      "select": {
+        "kind": "tv", "title": "The Office", "year": "2005", "imdb": "tt0386676",
+        "showFolder": "The Office (2005) [imdb-tt0386676]",
+        "season": 1, "seasonCount": 6, "suggestedStart": 1,
+        "existing": [],
+        "episodes": [
+          {"number": 1, "name": "Pilot",         "air": "2005-03-24", "runtime": 23, "overview": "", "exists": false},
+          {"number": 2, "name": "Diversity Day",  "air": "2005-03-29", "runtime": 22, "overview": "", "exists": false},
+          {"number": 3, "name": "Health Care",    "air": "2005-04-05", "runtime": 22, "overview": "", "exists": false},
+          {"number": 4, "name": "The Alliance",   "air": "2005-04-12", "runtime": 22, "overview": "", "exists": false},
+          {"number": 5, "name": "Basketball",     "air": "2005-04-19", "runtime": 22, "overview": "", "exists": false},
+          {"number": 6, "name": "Hot Girl",       "air": "2005-04-26", "runtime": 22, "overview": "", "exists": false}
+        ],
+        "suggested": [
+          {"title_id": 0, "episode": 1}, {"title_id": 1, "episode": 2}, {"title_id": 2, "episode": 3},
+          {"title_id": 3, "episode": 4}, {"title_id": 4, "episode": 5}, {"title_id": 5, "episode": 6}
+        ]
+      },
+      "meta": {
+        "fileShow": "The Office (2005)",
+        "seasonDir": "\\\\NAS\\media\\tv\\The Office (2005) [imdb-tt0386676]\\Season 1\\",
+        "existing": [],
+        "episodes": {"1": "Pilot", "2": "Diversity Day", "3": "Health Care", "4": "The Alliance", "5": "Basketball", "6": "Hot Girl"}
+      }
+    }
+  }
+}

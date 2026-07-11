@@ -190,19 +190,19 @@ build includes libbluray) and point `ffmpeg` at the `.exe` (or leave it as
 ## Command-line reference
 
 ```powershell
-py diskrip.py                          # scan, confirm, rip
-py diskrip.py --dry-run                # show the plan, rip nothing
-py diskrip.py --list-drives            # list optical drives
-py diskrip.py --drive 1                # choose a drive by index
-py diskrip.py --type tv|movie|auto     # force disc type
-py diskrip.py --title "The Office"     # override the title guess
-py diskrip.py --season 1               # force season (TV)
-py diskrip.py --start-episode 9        # first episode on this disc (TV)
-py diskrip.py --yes                    # unattended, no confirmation
-py diskrip.py --config path\to\config.json
+py src\diskrip.py                          # scan, confirm, rip
+py src\diskrip.py --dry-run                # show the plan, rip nothing
+py src\diskrip.py --list-drives            # list optical drives
+py src\diskrip.py --drive 1                # choose a drive by index
+py src\diskrip.py --type tv|movie|auto     # force disc type
+py src\diskrip.py --title "The Office"     # override the title guess
+py src\diskrip.py --season 1               # force season (TV)
+py src\diskrip.py --start-episode 9        # first episode on this disc (TV)
+py src\diskrip.py --yes                    # unattended, no confirmation
+py src\diskrip.py --config path\to\config.json
 
-py webapp.py                           # web UI on http://127.0.0.1:8765
-py webapp.py --port 9000 --no-browser
+py src\webapp.py                           # web UI on http://127.0.0.1:8765
+py src\webapp.py --port 9000 --no-browser
 ```
 
 ---
@@ -255,10 +255,14 @@ py webapp.py --port 9000 --no-browser
 
 | File | Purpose |
 |------|---------|
-| `diskrip.py` | Core engine: MakeMKV control, TMDB, naming, dedup/ordering, CLI. |
-| `webapp.py` | Local web server + JSON API. |
+| `src/diskrip.py` | Core engine: MakeMKV control, TMDB, naming, dedup/ordering, CLI. |
+| `src/webapp.py` | Local web server + JSON API. |
+| `src/thumbs.py` | ffmpeg frame extraction + libmmbd/AACS setup. |
+| `src/discdb.py` | TheDiscDb lookup: ContentHash, GraphQL query + cache, title join. Also runnable standalone (`py src\discdb.py <drive>`) to test a disc. |
 | `ui/index.html` | The drag-and-drop web UI (single file). |
-| `thumbs.py` | ffmpeg frame extraction + libmmbd/AACS setup. |
-| `discdb.py` | TheDiscDb lookup: ContentHash, GraphQL query + cache, title join. Also runnable standalone (`py discdb.py <drive>`) to test a disc. |
-| `setup.ps1` / `setup.cmd` | One-time Windows setup (winget installs + config). |
-| `config.example.json` | Template config with all keys and defaults. |
+| `install/setup.ps1` / `install/setup.cmd` | One-time Windows setup (winget installs + config). |
+| `config.example.json` | Template config with all keys and defaults (repo root). |
+
+The repo is organized into `src/` (Python engine + server), `ui/` (the single-file
+web front-end), and `install/` (the Windows setup scripts); `config.json` and
+`config.example.json` live at the repo root.

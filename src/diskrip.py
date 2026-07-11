@@ -1341,7 +1341,7 @@ def pick_drive(mk, requested):
 
 def main():
     ap = argparse.ArgumentParser(description="Rip a disc with MakeMKV and file it by TMDB naming.")
-    ap.add_argument("--config", default=str(Path(__file__).parent / "config.json"))
+    ap.add_argument("--config", default=str(Path(__file__).parent.parent / "config.json"))
     ap.add_argument("--drive", type=int, default=None, help="Drive index (default: auto).")
     ap.add_argument("--type", choices=["movie", "tv", "auto"], default="auto")
     ap.add_argument("--title", default=None, help="Override the title guess for TMDB search.")

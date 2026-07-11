@@ -1,0 +1,53 @@
+name: Deploy demo to GitHub Pages
+
+# Publishes the static UI demo (demo/ + the real ui/) to GitHub Pages.
+# One-time setup: repo Settings -> Pages -> Build and deployment -> Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "demo/**"
+      - "ui/**"
+      - ".github/workflows/deploy-demo.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages deploys at once; let the newest finish.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Assemble a minimal site: /demo (the harness) + /ui (the real UI it loads).
+      # demo.js fetches ../ui/index.html, so both must sit at the same level.
+      - name: Assemble static site
+        run: |
+          mkdir -p _site/demo _site/ui
+          cp demo/index.html demo/demo.js demo/mock-data.json _site/demo/
+          cp ui/index.html _site/ui/
+          cat > _site/index.html <<'HTML'
+          <!doctype html><html lang="en"><head><meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=./demo/">
+          <title>Disk-Rip Demo</title></head>
+          <body><a href="./demo/">Open the Disk-Rip demo &rarr;</a></body></html>
+          HTML
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
