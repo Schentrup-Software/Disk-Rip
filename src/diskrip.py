@@ -238,11 +238,14 @@ class MakeMKV:
                 proc.kill()
             except Exception:
                 pass
-            proc.wait()
-            return None, lines
-
         proc.wait()
-        return proc.returncode, lines
+        # the server calls makemkvcon on every drive refresh: an unclosed pipe
+        # per call would slowly use up the process's file handles
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        return (None if stalled else proc.returncode), lines
 
     @staticmethod
     def _fields(rest):
