@@ -1,0 +1,29 @@
+# Local test of the Disk-Rip image (library mode).
+#
+#   DISKRIP_TMDB_API_KEY=<your key> docker compose up --build
+#   open http://localhost:8765/library
+#
+# By default the four folders are empty test folders under ./.local/. To try
+# real files, point the variables at them, e.g. a mounted NAS share:
+#   DISKRIP_RIPS=/Volumes/rips DISKRIP_MOVIES=/Volumes/Movies docker compose up
+# Docker Desktop must be allowed to share those paths (Settings > Resources >
+# File sharing). Moving deletes each source after it is copied, so test on
+# copies or snapshot first.
+services:
+  disk-rip:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    image: disk-rip:dev
+    ports:
+      - "8765:8765"
+    environment:
+      DISKRIP_TMDB_API_KEY: ${DISKRIP_TMDB_API_KEY:-}
+      TZ: ${TZ:-America/Los_Angeles}
+    volumes:
+      - ${DISKRIP_CONFIG:-./.local/config}:/config
+      - ${DISKRIP_RIPS:-./.local/rips}:/rips
+      - ${DISKRIP_MOVIES:-./.local/movies}:/movies
+      - ${DISKRIP_TV:-./.local/tv}:/tv
+    restart: unless-stopped
