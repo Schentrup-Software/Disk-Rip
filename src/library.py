@@ -1023,24 +1023,39 @@ def build_plan(scan, cfg, overrides=None):
 # ---------------------------------------------------------------------------
 def _copy_then_remove(src, dst, on_bytes=None):
     """Cross-volume move with progress: copy to '<dst>.part', verify the size,
-    rename into place, then remove the source."""
+    rename into place, then remove the source.
+
+    Any failure (a full disk, a dropped share, Ctrl+C) removes the .part file
+    and leaves the source untouched - a half-written copy must never be left
+    behind to fill the disk."""
     part = dst.with_name(dst.name + ".part")
-    total = os.path.getsize(src)
+    st = os.stat(src)
+    total = st.st_size
     done = 0
-    with open(src, "rb") as fi, open(part, "wb") as fo:
-        while True:
-            buf = fi.read(8 * 1024 * 1024)
-            if not buf:
-                break
-            fo.write(buf)
-            done += len(buf)
-            if on_bytes:
-                on_bytes(done, total)
-    if os.path.getsize(part) != total:
-        os.remove(part)
-        raise OSError("copy was incomplete - source left untouched")
-    shutil.copystat(src, part, follow_symlinks=True)
-    os.rename(part, dst)
+    try:
+        with open(src, "rb") as fi, open(part, "wb") as fo:
+            while True:
+                buf = fi.read(8 * 1024 * 1024)
+                if not buf:
+                    break
+                fo.write(buf)
+                done += len(buf)
+                if on_bytes:
+                    on_bytes(done, total)
+            fo.flush()
+            os.fsync(fo.fileno())
+        if os.path.getsize(part) != total:
+            raise OSError(errno.EIO, "copy was incomplete - source left untouched")
+        # times only: copying the mode (shutil.copystat) would chmod the file,
+        # which on an NFSv4-ACL dataset can strip the ACL it just inherited
+        os.utime(part, ns=(st.st_atime_ns, st.st_mtime_ns))
+        os.rename(part, dst)
+    except BaseException:
+        try:
+            os.unlink(part)
+        except OSError:
+            pass
+        raise
     os.remove(src)
 
 
