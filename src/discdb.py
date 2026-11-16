@@ -23,6 +23,7 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
@@ -63,12 +64,52 @@ query($hash: String) {
 # ---------------------------------------------------------------------------
 # ContentHash - MD5 over 8-byte little-endian stream-file sizes
 # ---------------------------------------------------------------------------
+def _mount_point_posix(device):
+    """Where the OS mounted an optical device, or None.
+
+    MakeMKV reports the raw node ('/dev/rdisk4' on macOS, '/dev/sr0' on Linux);
+    the files live wherever the OS mounted it ('/Volumes/COCO', '/media/...').
+    Parsed from `mount`, whose lines look like
+        /dev/disk4 on /Volumes/COCO (udf, local, nodev, nosuid, read-only)
+        /dev/sr0 on /media/me/COCO type udf (ro,nosuid,nodev)"""
+    dev = (device or "").strip()
+    if not dev:
+        return None
+    if os.path.isdir(dev):                       # already a folder / mount point
+        return Path(dev)
+    node = dev.replace("/dev/rdisk", "/dev/disk")   # macOS raw -> block device
+    try:
+        out = subprocess.run(["mount"], capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in out.splitlines():
+        m = re.match(r"^(\S+) on (.+) type \S+ \(.*\)$", line) \
+            or re.match(r"^(\S+) on (.+) \([^()]*\)$", line)
+        if not m:
+            continue
+        src = m.group(1)
+        if src == node or re.fullmatch(re.escape(node) + r"s\d+", src):
+            return Path(m.group(2))
+    return None
+
+
 def _drive_root(device):
-    """Turn a MakeMKV device field ('E:', 'E:\\', 'E') into a 'E:\\' root."""
+    """Root folder of the disc MakeMKV calls `device`.
+
+    Windows: 'E:', 'E:\\' or 'E' -> 'E:\\'. macOS / Linux: the device node is
+    resolved to its mount point."""
+    if os.name != "nt":
+        return _mount_point_posix(device)
     m = re.search(r"[A-Za-z]", device or "")
     if not m:
         return None
     return Path(f"{m.group(0)}:\\")
+
+
+def disc_root(device):
+    """Public alias used by thumbs.py: the mounted root of a disc, or None."""
+    return _drive_root(device)
 
 
 def content_hash(device):
@@ -107,8 +148,11 @@ def _cache_dir(explicit=None):
     if explicit:
         d = Path(explicit)
     else:
-        base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA") \
-            or str(Path.home())
+        if sys.platform == "darwin":
+            base = str(Path.home() / "Library" / "Application Support")
+        else:
+            base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA") \
+                or os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
         d = Path(base) / "Disk-Rip" / "discdb-cache"
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -368,7 +412,8 @@ def _main(argv):
                   "(no BDMV\\STREAM or VIDEO_TS, or drive empty).")
             return 1
     else:
-        print("usage: py discdb.py <drive-letter>   |   py discdb.py --hash <HASH>")
+        print("usage: discdb.py <drive-letter | /dev/rdiskN | /Volumes/DISC>"
+              "   |   discdb.py --hash <HASH>")
         return 2
 
     print(f"ContentHash: {disc_hash}")
