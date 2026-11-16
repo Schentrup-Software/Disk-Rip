@@ -5,12 +5,18 @@ a disc — it identifies the movie or show via **TMDB**, works out which titles 
 the real episodes, and rips them with correct names, with a confirmation step so
 nothing lands in the wrong place.
 
+Already ripped a pile of discs? Point it at that **folder** instead: it works out
+which movie each folder is, merges multi-disc sets, sorts the feature from the
+extras and the menu junk, and moves everything into the same layout.
+
 ```
 Movies:  Title (Year) [imdb-ttID]/Title (Year) [imdb-ttID] - 1080p.mkv
 TV:      Show (Year) [imdb-ttID]/Season N/Show (Year) - s01e01.mkv
+Extras:  Title (Year) [imdb-ttID]/Featurettes/Name.mkv   (library mode)
 ```
 
-> **Windows only** for now.
+> Runs on **Windows** and **macOS**. Ripping is best tested on Windows; on macOS
+> the folder-organizing mode is the well-trodden path.
 
 ## Features
 
@@ -26,6 +32,11 @@ TV:      Show (Year) [imdb-ttID]/Season N/Show (Year) - s01e01.mkv
   across multi-disc sets without clobbering what you already ripped.
 - **Optional per-title thumbnails** pulled straight from the disc (no full rip),
   so you can eyeball which title is which.
+- **Organize folders you've already ripped** — a second page in the web UI (and
+  a CLI) that scans a folder of ripped discs, merges "Movie", "Movie - disk 2"
+  and "Movie Bonus Disc" into one movie, picks the feature by matching its
+  length to TMDB's runtime, files extras into Plex/Jellyfin extras folders, and
+  leaves menus, warning loops and duplicates behind. Needs no MakeMKV.
 - **Never overwrites** existing files.
 
 For how each of these works under the hood, see **[HOW-IT-WORKS.md](HOW-IT-WORKS.md)**.
@@ -39,12 +50,27 @@ TheDiscDb (with a double episode), and a TV disc that isn't.
 
 ## Requirements
 
-- Windows 10 / 11
-- MakeMKV, Python 3.9+, and (optional, for thumbnails) ffmpeg with libbluray —
-  **all installed for you by the setup script below.**
+- Windows 10 / 11, or macOS (with [Homebrew](https://brew.sh))
+- Python 3.9+ and ffmpeg; MakeMKV if you want to rip discs (organizing existing
+  folders doesn't need it) — **all installed for you by the setup script below.**
 - A free **TMDB API key** (v3): <https://www.themoviedb.org/settings/api>
 
 ## Setup
+
+### macOS
+
+1. Download or clone this repository.
+2. Double-click **`install/setup.command`** (or run `bash install/setup.sh`).
+   It installs Python and ffmpeg via **Homebrew**, offers to install MakeMKV,
+   asks for your TMDB key and folders, writes `config.json`, and verifies
+   everything works. Folders can be local paths or a NAS share
+   (`smb://nas.example.com/rips` — macOS mounts it under `/Volumes/`).
+3. Only if you rip discs: **register MakeMKV** (open the app once and enter your
+   license or the free beta key).
+
+Re-run setup any time to change the answers (`--skip-install` skips Homebrew).
+
+### Windows
 
 1. Download or clone this repository.
 2. Double-click **`install\setup.cmd`** (or run
@@ -63,18 +89,37 @@ edit `config.json`.
 
 1. Install [MakeMKV](https://www.makemkv.com/) and [Python 3.9+](https://python.org).
    For thumbnails, also install an ffmpeg build **with libbluray**:
-   `winget install Gyan.FFmpeg`.
+   `winget install Gyan.FFmpeg` (macOS: `brew install ffmpeg`, or
+   `ffmpeg-full` for thumbnails straight from a disc).
 2. Copy `config.example.json` to `config.json` and set at least `tmdb_api_key`,
-`tv_root`, `movie_root`, and the `makemkvcon` / `ffmpeg` paths.
+`tv_root`, `movie_root`, and the `makemkvcon` / `ffmpeg` paths (macOS:
+`/Applications/MakeMKV.app/Contents/MacOS/makemkvcon`).
 See the [config reference](HOW-IT-WORKS.md#configuration-reference).
  </details>
 
 ## Usage
 
+Commands below are shown for Windows (`py src\webapp.py`); on macOS use
+`python3 src/webapp.py`.
+
+### Organize a folder you've already ripped
+
+```bash
+python3 src/webapp.py --library      # web UI, opens http://127.0.0.1:8765/library
+python3 src/library.py --dry-run     # or: print the plan in the terminal
+```
+
+**Scan folder** → review each movie (match, feature, extras, what's skipped) →
+fix anything that's off → **Move files**. Each top-level folder is treated as one
+ripped disc; nothing moves until you confirm, nothing is overwritten or deleted,
+and every run can be undone. Details: **[HOW-IT-WORKS.md](HOW-IT-WORKS.md#library-mode)**.
+
+### Rip a disc
+
 > Keep the **MakeMKV app closed** while ripping — only one program can read the
 > optical drive at a time.
 
-### Web UI (recommended)
+#### Web UI (recommended)
 
 ```powershell
 py src\webapp.py
@@ -88,7 +133,7 @@ If the disc is already in **TheDiscDb**, Scan jumps straight to a pre-filled
 board — a "Matched by TheDiscDb" banner, the right show/season selected, and
 every episode already assigned — so you usually just click **Rip**.
 
-### CLI
+#### CLI
 
 ```powershell
 py src\diskrip.py                # scan the disc, confirm, rip
@@ -102,9 +147,9 @@ The full flag list and the interactive commands are in
 
 ## Configuration
 
-`install\setup.cmd` writes `config.json` for you. The keys you'll usually set are
-`tmdb_api_key`, `tv_root`, and `movie_root`; everything else has sensible
-defaults. See `config.example.json` and the
+The setup script writes `config.json` for you. The keys you'll usually set are
+`tmdb_api_key`, `tv_root`, `movie_root`, and (for library mode) `rips_root`;
+everything else has sensible defaults. See `config.example.json` and the
 [full reference](HOW-IT-WORKS.md#configuration-reference).
 
 > Your `config.json` contains your TMDB key. It's git-ignored — don't commit it.
@@ -118,6 +163,11 @@ defaults. See `config.example.json` and the
 - **No thumbnails** — set `ffmpeg` in `config.json` to a libbluray build
   (`winget install Gyan.FFmpeg`). Details in
   [HOW-IT-WORKS.md](HOW-IT-WORKS.md#thumbnails).
+- **Library page: "Source folder not found"** — the NAS share isn't mounted.
+  Connect to it in Finder (Go → Connect to Server) or enter its `smb://` address
+  as the source folder and Disk-Rip will mount it.
+- **Library page: a movie is matched wrong / not at all** — click **Change
+  match**, search the title, and pick the entry whose runtime matches your file.
 
 ## Credits
 
