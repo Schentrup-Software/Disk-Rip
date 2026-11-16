@@ -1214,3 +1214,188 @@ def undo(log_path):
                 break
             d = d.parent
     return restored, problems
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def print_plan(scan, items, cfg, show_skips=True):
+    by_group = {}
+    for i in items:
+        by_group.setdefault(i["group"], []).append(i)
+    movie_root = Path(cfg["movie_root"])
+    counts = {"move": 0, "exists": 0, "inplace": 0}
+    for g in scan.groups:
+        gi = by_group.get(g.id, [])
+        main = g.main_file()
+        print("\n" + dr.bold("=" * 78))
+        if g.details:
+            badge = {"high": dr.green("match: high"), "manual": dr.green("match: yours"),
+                     "medium": dr.yellow("match: medium"),
+                     "low": dr.red("match: LOW - check")}.get(g.confidence, g.confidence)
+            rt = ""
+            if main and g.runtime:
+                d = abs(main.duration / 60 - g.runtime)
+                flag = dr.green("✓") if d <= 3 else dr.red(f"⚠ Δ{int(d)}m")
+                rt = f"   feature {int(main.duration // 60)}m vs TMDB {g.runtime}m {flag}"
+            print(f"  {dr.bold(g.folder_name())}   {badge}{rt}")
+        else:
+            print(f"  {dr.bold(g.query)}   " + dr.red("no TMDB match - use --match or the web UI"))
+        print(dr.dim("  from: " + ", ".join(f["name"] for f in g.folders)))
+        for n in g.notes:
+            print(dr.yellow(f"  ! {n}"))
+        excluded = any(i["status"] == "excluded" for i in gi)
+        if excluded:
+            why = ("a rip may still be running" if g.busy else
+                   "looks like TV" if g.looks_tv else
+                   "low-confidence match: confirm it with --match "
+                   f"\"{g.folders[0]['name']}=tmdb:{g.details.get('id')}\", "
+                   "or pass --include-low" if g.confidence == "low" else "unticked")
+            print(dr.yellow(f"  (not moved - {why})"))
+        order = {"main": 0, "extra": 1, "skip": 2}
+        for i in sorted(gi, key=lambda i: (order[i["role"]], i["src"].lower())):
+            f = scan.files[i["file"]]
+            src = f"{f.folder}/{f.rel}"
+            meta = f"{dr.hms(f.duration):>8} {f.quality:>5} {human_size(f.size):>8}"
+            if i["role"] == "skip":
+                if show_skips:
+                    why = "; ".join(f.notes) or "skipped"
+                    print(dr.dim(f"    skip   {src[:58]:<58} {meta}  ({why})"))
+                continue
+            tag = dr.green("MAIN ") if i["role"] == "main" else "extra"
+            if i["target"]:
+                rel = os.path.relpath(i["target"], movie_root)
+                tgt = rel.split(os.sep, 1)[1] if os.sep in rel else rel
+            else:
+                tgt = "?"
+            st = {"exists": dr.red("  ● already in library (left alone)"),
+                  "inplace": dr.dim("  (already in place)")}.get(i["status"], "")
+            if i["status"] in counts:
+                counts[i["status"]] += 1
+            print(f"    {tag}  {src[:58]:<58} {meta}")
+            print(f"           {dr.dim('->')} {tgt}{st}")
+            for n in f.notes:
+                print(dr.yellow(f"           ! {n}"))
+    if scan.skipped:
+        print("\n" + dr.dim("Folders left alone:"))
+        for s in scan.skipped:
+            print(dr.dim(f"  {s['name']}  - {s['reason']}"))
+    print(f"\n{dr.bold(str(counts['move']))} file(s) to move into {movie_root}"
+          + (f", {counts['exists']} already there" if counts["exists"] else ""))
+    return counts
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Organize an existing folder of ripped discs into the movie library.")
+    ap.add_argument("--config", default=str(Path(__file__).parent.parent / "config.json"))
+    ap.add_argument("--root", default=None,
+                    help="Folder of ripped discs (path, or smb://host/share on macOS). "
+                         "Default: 'rips_root' in config.json.")
+    ap.add_argument("--only", action="append", default=[],
+                    help="Only folders whose name contains this text (repeatable).")
+    ap.add_argument("--match", action="append", default=[], metavar="FOLDER=TITLE",
+                    help="Fix an identification: 'IROBOT_US=I, Robot' or "
+                         "'IROBOT_US=tmdb:2048' (repeatable).")
+    ap.add_argument("--include-low", action="store_true",
+                    help="Also move groups whose TMDB match is low-confidence.")
+    ap.add_argument("--dry-run", action="store_true", help="Show the plan and exit.")
+    ap.add_argument("--yes", action="store_true", help="Move without asking.")
+    ap.add_argument("--prune-empty", action="store_true",
+                    help="After moving, delete source folders that are left empty.")
+    ap.add_argument("--hide-skips", action="store_true",
+                    help="Don't list skipped files in the plan.")
+    ap.add_argument("--undo", metavar="LOG", help="Reverse a previous run from its log file.")
+    args = ap.parse_args()
+
+    if args.undo:
+        restored, problems = undo(args.undo)
+        print(dr.green(f"Restored {restored} file(s)."))
+        for p in problems:
+            print(dr.yellow("  ! " + p))
+        return
+
+    cfg = dr.load_config(args.config)
+    if not cfg.get("movie_root"):
+        dr.die("Set 'movie_root' in config.json (where organized movies go).")
+    tmdb = dr.TMDB(cfg["tmdb_api_key"], cfg.get("language", "en"))
+
+    last = [""]
+    tty = sys.stdout.isatty()
+
+    def progress(phase, done, total):
+        if not tty:                      # piped/logged: one line per phase
+            if phase != last[0]:
+                last[0] = phase
+                print(f"  {phase}...", flush=True)
+            return
+        msg = f"{phase}... {done}/{total}" if total else f"{phase}..."
+        if msg != last[0]:
+            last[0] = msg
+            print("\r  " + dr.dim(msg) + " " * 12, end="", flush=True)
+
+    scan = scan_library(cfg, tmdb, args.root, progress)
+    print()
+    if args.only:
+        wanted = [o.lower() for o in args.only]
+        scan.groups = [g for g in scan.groups
+                       if any(w in f["name"].lower() for f in g.folders for w in wanted)]
+    for spec in args.match:
+        if "=" not in spec:
+            dr.die(f"--match needs FOLDER=TITLE, got: {spec}")
+        folder, want = (s.strip() for s in spec.split("=", 1))
+        hits = [g for g in scan.groups
+                if any(folder.lower() == f["name"].lower() for f in g.folders)]
+        if not hits:
+            dr.die(f"--match: no scanned folder is named '{folder}'")
+        for g in hits:
+            if want.lower().startswith("tmdb:"):
+                scan.identifier.choose(g, int(want[5:]))
+            else:
+                g.query = want
+                g.year = None
+                scan.identifier.identify(g)
+                if g.details:
+                    g.confidence = "manual" if g.confidence != "low" else "low"
+            classify_group(g, cfg)
+
+    overrides = {"groups": {}}
+    if args.include_low:
+        for g in scan.groups:
+            if g.details and not g.busy and not g.looks_tv:
+                overrides["groups"][g.id] = {"include": True}
+    items = build_plan(scan, cfg, overrides)
+    counts = print_plan(scan, items, cfg, show_skips=not args.hide_skips)
+    if args.dry_run or not counts["move"]:
+        if args.dry_run:
+            print(dr.dim("[dry-run] nothing was moved."))
+        return
+    if not args.yes:
+        ans = input(f"\nMove {counts['move']} file(s) now? [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("Nothing moved.")
+            return
+
+    def on_item(i):
+        if i.get("state") == "moving":
+            print(f"\r  moving {Path(i['src']).name[:50]:<50} {i.get('pct', 0):3d}%",
+                  end="", flush=True)
+        elif i.get("state") == "done":
+            print(f"\r  {dr.green('✓')} {Path(i['target']).name[:70]:<70}")
+        elif i.get("state") in ("failed", "skipped"):
+            print(f"\r  {dr.red('✗')} {Path(i['src']).name}: {i.get('error')}")
+
+    log = apply_plan(items, cfg, scan, prune=args.prune_empty, on_item=on_item)
+    print(dr.green(f"\nDone. {len(log['moves'])} file(s) moved."))
+    print(dr.dim(f"Undo with:  python3 src/library.py --undo \"{log['path']}\""))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except dr.DiskRipError as e:
+        print(dr.red("\nERROR: ") + str(e), file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(130)
