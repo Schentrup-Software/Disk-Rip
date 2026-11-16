@@ -4,14 +4,19 @@ webapp.py - Local web UI for Disk-Rip.
 
 Starts a small HTTP server (stdlib only) and opens a browser page that lets you:
   pick a drive -> scan the disc -> drag disc titles onto episodes -> rip.
+...or, on the Library page (/library), organize a folder of discs you have
+already ripped: scan -> review the matches -> move into the movie library.
 
 All the real work (MakeMKV scan/rip, TMDB lookup, segment-map de-dup, naming) is
-done by diskrip.py; this file is just a thin JSON API + static file server on top.
+done by diskrip.py and library.py; this file is just a thin JSON API + static
+file server on top.
 
-Run:  py webapp.py            (opens http://127.0.0.1:8765 in your browser)
+Run:  py webapp.py            (Windows; opens http://127.0.0.1:8765)
+      python3 src/webapp.py   (macOS / Linux)
 """
 
 import json
+import os
 import threading
 import time
 import traceback
@@ -22,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 import diskrip as dr
 import discdb
+import library
 from thumbs import Thumbnailer
 
 HOST = "127.0.0.1"
@@ -47,6 +53,10 @@ class App:
         self.thumbjob = None      # dict: thumbnail prefetch progress
         self.discdb_ep_titles = set()    # title ids TheDiscDb mapped to an episode
         self.discdb_multi_titles = set() # ...of those, the ones spanning a range
+        self.lib = None           # library.LibraryScan from the last library scan
+        self.libjob = None        # dict: progress of the running library scan
+        self.applyjob = None      # dict: progress of the running library move
+        self.libthumbs = library.LibThumbs(self.cfg)
         self.lock = threading.Lock()
         self.thumbnailer = Thumbnailer(
             self.cfg.get("ffmpeg"), self.cfg["work_dir"],
@@ -382,6 +392,150 @@ class App:
     def api_rip_status(self, _body):
         return self.ripjob or {"running": False, "items": []}
 
+    # --- library mode: organize already-ripped folders ---------------------
+    def api_library_config(self, _body):
+        return {
+            "root": self.cfg.get("rips_root", ""),
+            "movieRoot": self.cfg.get("movie_root", ""),
+            "categories": library.CATEGORIES,
+            "thumbs": self.libthumbs.available(),
+            "makemkv": os.path.isfile(self.cfg.get("makemkvcon") or ""),
+        }
+
+    def _need_lib(self):
+        if self.lib is None:
+            raise dr.DiskRipError("Scan the folder first.")
+        return self.lib
+
+    def _lib_json(self, overrides):
+        """The scan plus, per file, where it would go under the current choices."""
+        lib = self._need_lib()
+        overrides = overrides or {}
+        data = lib.to_json(self.cfg)
+        items = library.build_plan(lib, self.cfg, overrides)
+        data["plan"] = {i["file"]: {"role": i["role"], "category": i["category"],
+                                    "name": i["name"], "target": i["target"],
+                                    "status": i["status"]} for i in items}
+        gov = overrides.get("groups") or {}
+        data["include"] = {
+            g.id: bool((gov.get(g.id) or {}).get("include", library.default_include(g)))
+            for g in lib.groups}
+        data["thumbs"] = self.libthumbs.available()
+        return data
+
+    def api_library_scan(self, body):
+        with self.lock:
+            if self.libjob and self.libjob.get("running"):
+                raise dr.DiskRipError("A library scan is already running.")
+            if self.applyjob and self.applyjob.get("running"):
+                raise dr.DiskRipError("Files are being moved - wait for that to finish.")
+            root = (body.get("root") or "").strip() or None
+            job = self.libjob = {"running": True, "phase": "Starting", "done": 0,
+                                 "total": 0, "error": None}
+
+        def worker():
+            def progress(phase, done, total):
+                job["phase"], job["done"], job["total"] = phase, done, total
+            try:
+                self.lib = library.scan_library(self.cfg, self.tmdb, root, progress)
+            except dr.DiskRipError as e:
+                job["error"] = str(e)
+            except Exception as e:
+                traceback.print_exc()
+                job["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                job["running"] = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
+    def api_library_status(self, _body):
+        job = dict(self.libjob or {"running": False, "error": None})
+        if not job.get("running") and not job.get("error") and self.lib is not None:
+            job["result"] = self._lib_json(None)
+        return job
+
+    def api_library_plan(self, body):
+        return self._lib_json(body.get("overrides"))
+
+    def api_library_search(self, body):
+        lib = self._need_lib()
+        query = (body.get("query") or "").strip()
+        if not query:
+            return []
+        year = body.get("year") or None
+        return [lib.identifier._trim(c) for c in lib.identifier.search(query, year, limit=8)]
+
+    def api_library_select(self, body):
+        """Pin a group to a specific TMDB movie, then re-pick its main feature
+        against that movie's runtime."""
+        lib = self._need_lib()
+        g = lib.by_id.get(body.get("group"))
+        if g is None:
+            raise dr.DiskRipError("Unknown movie group - scan again.")
+        lib.identifier.choose(g, int(body["id"]))
+        library.classify_group(g, self.cfg)
+        return self._lib_json(body.get("overrides"))
+
+    def api_library_apply(self, body):
+        with self.lock:
+            lib = self._need_lib()
+            if self.applyjob and self.applyjob.get("running"):
+                raise dr.DiskRipError("A move is already in progress.")
+            items = library.build_plan(lib, self.cfg, body.get("overrides"))
+            todo = [i for i in items if i["status"] == "move"]
+            if not todo:
+                raise dr.DiskRipError("Nothing to move - tick at least one matched movie.")
+            for i in todo:
+                i["state"], i["pct"] = "queued", 0
+            job = self.applyjob = {"running": True, "items": todo, "error": None,
+                                   "log": None, "pruned": []}
+        prune = bool(body.get("prune"))
+
+        def worker():
+            try:
+                log = library.apply_plan(items, self.cfg, lib, prune=prune)
+                job["log"], job["pruned"] = log.get("path"), log.get("pruned", [])
+            except Exception as e:
+                traceback.print_exc()
+                job["error"] = f"{type(e).__name__}: {e}"
+            finally:
+                job["running"] = False
+                self.lib = None      # paths changed - the old scan is stale
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True, "count": len(todo)}
+
+    def api_library_apply_status(self, _body):
+        job = self.applyjob
+        if not job:
+            return {"running": False, "items": []}
+        return {
+            "running": job["running"], "error": job["error"], "log": job["log"],
+            "pruned": job["pruned"],
+            "items": [{"src": i["src"], "target": i["target"], "role": i["role"],
+                       "state": i.get("state", "queued"), "pct": i.get("pct", 0),
+                       "error": i.get("error")} for i in job["items"]],
+        }
+
+    def api_library_undo(self, body):
+        """Reverse a finished move from its log (only logs this tool wrote)."""
+        if self.applyjob and self.applyjob.get("running"):
+            raise dr.DiskRipError("A move is still in progress.")
+        log_dir = (Path(self.cfg["work_dir"]) / "library-logs").resolve()
+        log = Path(body.get("log") or "").resolve()
+        if log.parent != log_dir or not log.is_file():
+            raise dr.DiskRipError("That isn't one of Disk-Rip's move logs.")
+        restored, problems = library.undo(log)
+        self.lib = None
+        return {"restored": restored, "problems": problems}
+
+    def library_thumb(self, file_id):
+        if self.lib is None:
+            return None
+        f = self.lib.files.get(file_id)
+        return self.libthumbs.frame(f) if f else None
+
     def thumb_frame(self, title_id, pos):
         """Path to a cached JPEG frame for a title, or None. Never reads the
         drive while a rip is running (one program owns the drive)."""
@@ -406,6 +560,20 @@ ROUTES = {
     "/api/preview": "api_preview",
     "/api/rip": "api_rip",
     "/api/rip/status": "api_rip_status",
+    "/api/library/scan": "api_library_scan",
+    "/api/library/plan": "api_library_plan",
+    "/api/library/search": "api_library_search",
+    "/api/library/select": "api_library_select",
+    "/api/library/apply": "api_library_apply",
+    "/api/library/undo": "api_library_undo",
+}
+
+GET_ROUTES = {
+    "/api/rip/status": "api_rip_status",
+    "/api/thumbs/status": "api_thumbs_status",
+    "/api/library/config": "api_library_config",
+    "/api/library/status": "api_library_status",
+    "/api/library/apply/status": "api_library_apply_status",
 }
 
 
@@ -440,13 +608,25 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route in ("/", "/index.html"):
             return self._send_file(ROOT / "ui" / "index.html", "text/html; charset=utf-8")
-        if route == "/api/rip/status":
-            return self._dispatch("api_rip_status", {})
-        if route == "/api/thumbs/status":
-            return self._dispatch("api_thumbs_status", {})
+        if route in ("/library", "/library.html"):
+            return self._send_file(ROOT / "ui" / "library.html", "text/html; charset=utf-8")
+        if route in GET_ROUTES:
+            return self._dispatch(GET_ROUTES[route], {})
         if route == "/api/thumb":
             return self._send_thumb(parse_qs(parsed.query))
+        if route == "/api/library/thumb":
+            return self._send_library_thumb(parse_qs(parsed.query))
         self.send_error(404)
+
+    def _send_library_thumb(self, qs):
+        try:
+            path = self.app.library_thumb(qs.get("id", [""])[0])
+        except Exception:
+            traceback.print_exc()
+            path = None
+        if not path:
+            return self.send_error(404)
+        self._send_file(path, "image/jpeg")
 
     def _send_thumb(self, qs):
         try:
@@ -495,15 +675,23 @@ def main():
     ap.add_argument("--config", default=str(ROOT / "config.json"))
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--library", action="store_true",
+                    help="Open on the Library page (organize already-ripped folders).")
     args = ap.parse_args()
 
     Handler.app = App(args.config)
     server = ThreadingHTTPServer((HOST, args.port), Handler)
     url = f"http://{HOST}:{args.port}"
+    # No MakeMKV on this machine -> there is nothing to rip with, so land on
+    # the Library page instead of an empty drive list.
+    has_makemkv = os.path.isfile(Handler.app.cfg.get("makemkvcon") or "")
+    start = url + "/library" if (args.library or not has_makemkv) else url
     print(f"Disk-Rip web UI running at {url}")
+    print(f"  Rip a disc:        {url}/")
+    print(f"  Organize a folder: {url}/library")
     print("Press Ctrl+C to stop.")
     if not args.no_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.5, lambda: webbrowser.open(start)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk-Rip · Library</title>
+<style>
+  :root {
+    --bg:#0f1216; --panel:#171c23; --panel2:#1e242d; --line:#2a323d;
+    --text:#e6edf3; --dim:#8b98a5; --accent:#4a9eff; --good:#3fb950;
+    --warn:#d29922; --bad:#f85149; --dup:#a371f7;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; padding-bottom:90px; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+  header .sub { color:var(--dim); font-size:12px; }
+  .tabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:9px; padding:3px; }
+  .tabs a { color:var(--dim); text-decoration:none; font-size:13px; font-weight:600;
+    padding:5px 12px; border-radius:6px; }
+  .tabs a:hover { color:var(--text); }
+  .tabs a.on { background:var(--accent); color:#fff; }
+  main { max-width:1200px; margin:0 auto; padding:20px; }
+  .step { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; margin-bottom:16px; }
+  .step h2 { font-size:13px; text-transform:uppercase; letter-spacing:.6px;
+    color:var(--dim); margin:0 0 12px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px;
+    padding:8px 14px; font-size:13px; cursor:pointer; font-weight:600; }
+  button:hover { filter:brightness(1.1); }
+  button.ghost { background:var(--panel2); color:var(--text); border:1px solid var(--line); }
+  button.small { padding:5px 10px; font-size:12px; }
+  button.danger { background:var(--bad); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  input, select { background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:7px; padding:7px 10px; font-size:13px; }
+  input[type=checkbox] { width:17px; height:17px; accent-color:var(--accent); cursor:pointer; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--dim); }
+  .hidden { display:none !important; }
+  code { background:var(--panel2); padding:1px 5px; border-radius:4px; font-size:12px;
+    word-break:break-all; }
+  .pill { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+    padding:2px 6px; border-radius:5px; white-space:nowrap; }
+  .pill.ok { background:rgba(63,185,80,.15); color:var(--good); }
+  .pill.warn { background:rgba(210,153,34,.16); color:var(--warn); }
+  .pill.bad { background:rgba(248,81,73,.15); color:var(--bad); }
+  .pill.dim { background:rgba(139,152,165,.15); color:var(--dim); }
+  .pill.main { background:rgba(74,158,255,.16); color:var(--accent); }
+  .banner { border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px; }
+  .banner.bad { background:rgba(248,81,73,.12); border:1px solid var(--bad); }
+  .banner.warn { background:rgba(210,153,34,.12); border:1px solid var(--warn); }
+  .banner.good { background:rgba(63,185,80,.10); border:1px solid var(--good); }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--line);
+    border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite;
+    vertical-align:middle; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .bar { height:8px; background:var(--panel2); border-radius:5px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+  .linklike { color:var(--accent); cursor:pointer; user-select:none; background:none;
+    border:0; padding:0; font:inherit; font-weight:400; border-bottom:1px dashed var(--line);
+    border-radius:0; }
+  .linklike:hover { border-bottom-color:var(--accent); filter:none; }
+
+  /* filter chips */
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { padding:5px 12px; border-radius:20px; font-size:13px; color:var(--dim);
+    background:var(--panel2); border:1px solid var(--line); cursor:pointer; user-select:none; }
+  .chip.on { color:var(--text); border-color:var(--accent); }
+  .chip b { color:var(--text); }
+
+  /* one movie */
+  .movie { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    margin-bottom:12px; overflow:hidden; }
+  .movie.off .mhead > :not(.tick):not(.mactions) { opacity:.6; }
+  .movie.attn { border-color:rgba(210,153,34,.55); }
+  .mhead { display:grid; grid-template-columns:auto 62px 1fr auto; gap:14px;
+    padding:14px 16px; align-items:start; }
+  .mhead .tick { padding-top:4px; }
+  .poster { width:62px; height:93px; border-radius:6px; object-fit:cover; display:block;
+    background:repeating-linear-gradient(45deg,#232a33,#232a33 6px,#1c222a 6px,#1c222a 12px); }
+  .mtitle { font-size:16px; font-weight:700; display:flex; align-items:center; gap:8px;
+    flex-wrap:wrap; }
+  .mtitle .yr { color:var(--dim); font-weight:400; }
+  .mmeta { color:var(--dim); font-size:12px; margin-top:4px; }
+  .mmeta .src { color:var(--text); }
+  .mdest { margin-top:6px; font-size:12px; }
+  .mcount { margin-top:6px; font-size:12px; color:var(--dim); }
+  .mcount b { color:var(--text); }
+  .mactions { display:flex; flex-direction:column; gap:6px; align-items:flex-end; }
+  .mbody { border-top:1px solid var(--line); padding:12px 16px; background:rgba(0,0,0,.14);
+    overflow-x:auto; }
+  .note { font-size:12px; color:var(--warn); margin-top:6px; }
+
+  /* change-match panel */
+  .cands { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+  .cand { display:grid; grid-template-columns:40px 1fr auto; gap:10px; align-items:center;
+    background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
+  .cand.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .cand img, .cand .noimg { width:40px; height:60px; border-radius:4px; object-fit:cover;
+    background:var(--panel); display:block; }
+  .cand .nm { font-weight:600; }
+  .cand .ov { color:var(--dim); font-size:12px; display:-webkit-box; -webkit-line-clamp:2;
+    -webkit-box-orient:vertical; overflow:hidden; }
+
+  /* files table */
+  table.files { width:100%; border-collapse:collapse; font-size:13px; }
+  table.files th { text-align:left; font-size:11px; text-transform:uppercase;
+    letter-spacing:.5px; color:var(--dim); font-weight:600; padding:4px 8px 8px; }
+  table.files td { padding:6px 8px; border-top:1px solid var(--line); vertical-align:middle; }
+  table.files tr.skip td:not(.ctl) { opacity:.5; }
+  .thumb { width:96px; height:54px; object-fit:cover; border-radius:4px; display:block;
+    background:repeating-linear-gradient(45deg,#232a33,#232a33 6px,#1c222a 6px,#1c222a 12px); }
+  .fname { font-weight:600; word-break:break-word; }
+  .fsub { color:var(--dim); font-size:11px; word-break:break-word; }
+  .fnote { color:var(--warn); font-size:11px; }
+  .num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.ctl select, td.ctl input { padding:5px 8px; font-size:12px; }
+  td.ctl input.nm { width:100%; min-width:170px; }
+  .target { font-size:12px; color:var(--dim); word-break:break-word; margin-top:3px; }
+  .target b { color:var(--text); font-weight:600; }
+
+  /* sticky action bar */
+  .actionbar { position:fixed; left:0; right:0; bottom:0; background:rgba(15,18,22,.96);
+    border-top:1px solid var(--line); backdrop-filter:blur(6px); z-index:5; }
+  .actionbar .inner { max-width:1200px; margin:0 auto; padding:12px 20px;
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .actionbar .sum { flex:1; min-width:220px; }
+  .actionbar .sum b { font-size:15px; }
+
+  .moverow { padding:8px 0; border-bottom:1px solid var(--line); font-size:13px;
+    display:grid; grid-template-columns:22px 1fr 150px; gap:10px; align-items:center; }
+  @media (max-width:760px) {
+    .mhead { grid-template-columns:auto 1fr; }
+    .mhead .poster { display:none; }
+    .mactions { flex-direction:row; grid-column:1 / -1; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>💿 Disk-Rip</h1>
+  <nav class="tabs">
+    <a href="/" id="tab-rip">Rip a disc</a>
+    <a href="/library" class="on">Organize a folder</a>
+  </nav>
+  <span class="sub">discs you've already ripped → named, sorted movie library</span>
+</header>
+<main>
+  <div id="err"></div>
+
+  <section class="step" id="s-source">
+    <h2>Source folder</h2>
+    <div class="row">
+      <input id="root" style="flex:1; min-width:280px"
+             placeholder="/Volumes/rips   or   smb://nas.example.com/rips">
+      <button id="scan-btn" data-act="scan">Scan folder</button>
+    </div>
+    <div class="muted" style="margin-top:10px; font-size:12px">
+      Each top-level folder is treated as one ripped disc. Movies are filed into
+      <code id="dest">…</code>. Scanning only reads — nothing moves until you click
+      <b>Move files</b>.
+    </div>
+    <div id="scan-progress" class="hidden" style="margin-top:12px">
+      <div class="row" style="margin-bottom:6px">
+        <span class="spinner"></span> <span id="scan-phase" class="muted"></span>
+      </div>
+      <div class="bar"><div id="scan-bar"></div></div>
+    </div>
+  </section>
+
+  <section class="step hidden" id="s-summary">
+    <div class="row" style="justify-content:space-between">
+      <div class="chips" id="chips"></div>
+      <div class="row" style="gap:8px">
+        <button class="ghost small" data-act="expand-all">Expand all</button>
+        <button class="ghost small" data-act="collapse-all">Collapse all</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="groups"></div>
+
+  <section class="step hidden" id="s-skipped">
+    <h2>Folders left alone</h2>
+    <div id="skipped"></div>
+  </section>
+
+  <section class="step hidden" id="s-progress">
+    <h2>Moving</h2>
+    <div id="move-banner"></div>
+    <div id="move-list"></div>
+  </section>
+</main>
+
+<div class="actionbar hidden" id="actionbar">
+  <div class="inner">
+    <div class="sum" id="sum"></div>
+    <label class="row muted" style="gap:6px; font-size:12px" title="After a successful move, delete source folders that contain nothing but empty sub-folders and .DS_Store files.">
+      <input type="checkbox" id="prune"> Remove emptied source folders
+    </label>
+    <button class="ghost hidden" id="cancel-btn" data-act="cancel-move">Cancel</button>
+    <button id="move-btn" data-act="move">Move files</button>
+  </div>
+</div>
+
+<script>
+const S = { cfg:null, data:null, overrides:{groups:{}, files:{}}, open:{}, matchOpen:{},
+            cands:{}, q:{}, filter:'all', armed:false, moving:false };
+const IMG = 'https://image.tmdb.org/t/p/';
+const $ = id => document.getElementById(id);
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function showErr(msg){ $('err').innerHTML = msg ? `<div class="banner bad">⚠ ${esc(msg)}</div>` : ''; }
+function show(id, on){ $(id).classList.toggle('hidden', !on); }
+async function post(path, body){
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body || {})});
+  const j = await r.json();
+  if(j && j.error) throw new Error(j.error);
+  return j;
+}
+async function get(path){
+  // status endpoints carry their own "error" field next to "running" - only a
+  // bare {error} object is a failed request
+  const j = await (await fetch(path)).json();
+  if(j && j.error && j.running === undefined) throw new Error(j.error);
+  return j;
+}
+function gb(bytes){
+  const g = bytes / 1073741824;
+  return g >= 10 ? g.toFixed(0) + ' GB' : g >= 1 ? g.toFixed(1) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB';
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ---------- start-up ---------- */
+async function init(){
+  try {
+    S.cfg = await get('/api/library/config');
+    $('root').value = S.cfg.root || '';
+    $('dest').textContent = S.cfg.movieRoot || '(movie_root is not set in config.json)';
+    if(!S.cfg.makemkv) $('tab-rip').title = 'MakeMKV is not installed - it is only needed to rip discs';
+    // a scan may already be running (or finished) on the server - pick it up
+    const st = await get('/api/library/status');
+    if(st.running) pollScan();
+    else if(st.result) setData(st.result);
+  } catch(e){ showErr(e.message); }
+}
+
+/* ---------- scan ---------- */
+async function scan(){
+  showErr('');
+  S.overrides = {groups:{}, files:{}}; S.open = {}; S.matchOpen = {}; S.cands = {}; S.q = {};
+  S.data = null; S.armed = false;
+  $('groups').innerHTML = ''; show('s-summary', false); show('s-skipped', false);
+  show('actionbar', false); show('s-progress', false);
+  try {
+    await post('/api/library/scan', {root: $('root').value.trim()});
+    await pollScan();
+  } catch(e){ showErr(e.message); }
+}
+async function pollScan(){
+  $('scan-btn').disabled = true; show('scan-progress', true);
+  try {
+    for(;;){
+      const st = await get('/api/library/status');
+      const pct = st.total ? Math.round(st.done * 100 / st.total) : 0;
+      $('scan-phase').textContent = (st.phase || 'Working') + (st.total ? ` — ${st.done} / ${st.total}` : '…');
+      $('scan-bar').style.width = pct + '%';
+      if(!st.running){
+        if(st.error) showErr(st.error);
+        else if(st.result) setData(st.result);
+        return;
+      }
+      await sleep(500);
+    }
+  } finally { show('scan-progress', false); $('scan-btn').disabled = false; }
+}
+function setData(d){
+  S.data = d;
+  $('dest').textContent = d.movieRoot || '';
+  if(!$('root').value) $('root').value = d.root;
+  render();
+}
+
+/* ---------- derived state ---------- */
+function planOf(f){ return S.data.plan[f.id] || {role:f.role, category:f.category, name:f.name, status:'skip'}; }
+function included(g){ return !!S.data.include[g.id]; }
+function needsAttention(g){
+  return !g.match || g.confidence === 'low' || g.busy || g.looksTv || !included(g);
+}
+function counts(g){
+  const c = {main:0, extra:0, skip:0, move:0, exists:0, bytes:0};
+  g.files.forEach(f => {
+    const p = planOf(f);
+    c[p.role]++;
+    if(p.status === 'move'){ c.move++; c.bytes += f.size; }
+    if(p.status === 'exists') c.exists++;
+  });
+  return c;
+}
+function relTarget(g, target){
+  if(!target) return '';
+  const folder = g.match ? g.match.folder : '';
+  const k = folder ? Math.max(target.lastIndexOf(folder + '/'), target.lastIndexOf(folder + '\\')) : -1;
+  return k >= 0 ? target.slice(k + folder.length + 1) : target;
+}
+
+/* ---------- render ---------- */
+function render(){
+  if(!S.data) return;
+  const d = S.data;
+  const attn = d.groups.filter(needsAttention).length;
+  show('s-summary', d.groups.length > 0);
+  $('chips').innerHTML = [
+    ['all', 'All', d.groups.length], ['attn', 'Needs a look', attn], ['ready', 'Ready', d.groups.length - attn]
+  ].map(([k, lab, n]) =>
+    `<span class="chip ${S.filter===k?'on':''}" data-act="filter" data-filter="${k}">${lab} <b>${n}</b></span>`
+  ).join('');
+  const list = d.groups.filter(g => S.filter==='all' || (S.filter==='attn') === needsAttention(g));
+  $('groups').innerHTML = list.length ? list.map(renderMovie).join('')
+    : (d.groups.length ? '<div class="step muted">Nothing in this filter.</div>'
+       : '<div class="step muted">No ripped-disc folders with video files were found here.</div>');
+  show('s-skipped', d.skipped.length > 0);
+  $('skipped').innerHTML = d.skipped.map(s =>
+    `<div style="padding:3px 0"><b>${esc(s.name)}</b> <span class="muted">— ${esc(s.reason)}</span></div>`).join('');
+  renderBar();
+}
+
+function confPill(g){
+  if(!g.match) return '<span class="pill bad">No match</span>';
+  return {high:'<span class="pill ok">Match: high</span>',
+          manual:'<span class="pill ok">Your pick</span>',
+          medium:'<span class="pill warn">Match: medium</span>',
+          low:'<span class="pill bad">Low — check</span>'}[g.confidence] || '';
+}
+function runtimeCheck(g){
+  if(!g.match || !g.mainMinutes || !g.match.runtime) return '';
+  const delta = Math.abs(g.mainMinutes - g.match.runtime);
+  const txt = `feature ${Math.round(g.mainMinutes)} min · TMDB ${g.match.runtime} min`;
+  return delta <= 3 ? `<span class="pill ok" title="Your file's length matches TMDB's runtime">✓ ${txt}</span>`
+                    : `<span class="pill bad" title="Length differs from TMDB - wrong movie, or a different cut?">⚠ ${txt}</span>`;
+}
+
+function renderMovie(g){
+  const c = counts(g), inc = included(g), m = g.match;
+  const cls = ['movie', inc ? '' : 'off', needsAttention(g) ? 'attn' : ''].join(' ');
+  const poster = m && m.poster ? `<img class="poster" loading="lazy" src="${IMG}w154${esc(m.poster)}" alt="" onerror="this.removeAttribute('src')">`
+                               : '<div class="poster"></div>';
+  const title = m ? `${esc(m.title)} <span class="yr">(${esc(m.year || '?')})</span>`
+                  : `${esc(g.query)} <span class="yr">— not identified</span>`;
+  const dest = m ? `<div class="mdest"><span class="muted">→</span> <code>${esc(m.folder)}/</code></div>` : '';
+  const parts = [`<b>${c.main}</b> main`, `<b>${c.extra}</b> extra${c.extra===1?'':'s'}`];
+  if(c.skip) parts.push(`<b>${c.skip}</b> skipped`);
+  if(c.exists) parts.push(`<span style="color:var(--bad)">${c.exists} already in library</span>`);
+  const notes = g.notes.map(n => `<div class="note">! ${esc(n)}</div>`).join('');
+  const open = !!S.open[g.id], mopen = !!S.matchOpen[g.id];
+  return `<div class="${cls}" data-gid="${g.id}">
+    <div class="mhead">
+      <div class="tick"><input type="checkbox" data-act="include" data-gid="${g.id}"
+        ${inc ? 'checked' : ''} ${m ? '' : 'disabled'} title="Include this movie in the move"></div>
+      ${poster}
+      <div>
+        <div class="mtitle">${title} ${confPill(g)} ${runtimeCheck(g)}</div>
+        <div class="mmeta">${m && m.imdb ? esc(m.imdb) + ' · ' : ''}from
+          ${g.folders.map(f => `<span class="src">${esc(f)}</span>`).join(' <span class="muted">+</span> ')}</div>
+        ${dest}
+        <div class="mcount">${parts.join(' · ')}</div>
+        ${notes}
+      </div>
+      <div class="mactions">
+        <button class="ghost small" data-act="toggle-match" data-gid="${g.id}">${m ? 'Change match' : 'Find match'}</button>
+        <button class="ghost small" data-act="toggle-files" data-gid="${g.id}">${open ? 'Hide files ▴' : `Files (${g.files.length}) ▾`}</button>
+      </div>
+    </div>
+    ${mopen ? renderMatchPanel(g) : ''}
+    ${open ? renderFiles(g) : ''}
+  </div>`;
+}
+
+function renderMatchPanel(g){
+  const cands = S.cands[g.id] || g.candidates || [];
+  const q = S.q[g.id] ?? (g.match ? g.match.title : g.query);
+  const rows = cands.map(c => {
+    const sel = g.match && g.match.id === c.id;
+    const img = c.poster ? `<img loading="lazy" src="${IMG}w92${esc(c.poster)}" alt="" onerror="this.removeAttribute('src')">` : '<div class="noimg"></div>';
+    let rt = c.runtime ? `${c.runtime} min` : 'runtime unknown';
+    if(c.runtime && g.mainMinutes){
+      rt += Math.abs(c.runtime - g.mainMinutes) <= 3
+        ? ' <span class="pill ok">matches your file</span>'
+        : ` <span class="pill dim">your file: ${Math.round(g.mainMinutes)} min</span>`;
+    }
+    return `<div class="cand ${sel ? 'sel' : ''}">
+      ${img}
+      <div><div class="nm">${esc(c.name)} <span class="muted">(${esc(c.year || '?')}) · ${rt}</span></div>
+        <div class="ov">${esc(c.overview)}</div></div>
+      <button class="${sel ? 'ghost' : ''} small" data-act="choose" data-gid="${g.id}" data-id="${c.id}"
+        ${sel ? 'disabled' : ''}>${sel ? 'Selected' : 'Use this'}</button>
+    </div>`;
+  }).join('');
+  return `<div class="mbody">
+    <div class="row">
+      <input data-q="${g.id}" value="${esc(q)}" placeholder="Movie title…" style="width:300px">
+      <input data-y="${g.id}" placeholder="year" style="width:74px" value="${esc(S.q[g.id + ':y'] ?? '')}">
+      <button class="small" data-act="search" data-gid="${g.id}">Search TMDB</button>
+      <span class="muted" id="sr-${g.id}"></span>
+    </div>
+    <div class="cands">${rows || '<span class="muted">No candidates yet — search for the title.</span>'}</div>
+  </div>`;
+}
+
+function renderFiles(g){
+  const thumbs = S.data.thumbs, cats = S.data.categories;
+  const rows = g.files.map(f => {
+    const p = planOf(f);
+    const sub = g.folders.length > 1 || f.rel !== (f.stem + f.ext)
+      ? `<div class="fsub">${esc(f.folder)}/${esc(f.rel)}</div>` : '';
+    const notes = f.notes.map(n => `<div class="fnote">${esc(n)}</div>`).join('');
+    const roleSel = `<select data-act="role" data-fid="${f.id}">
+        <option value="main" ${p.role==='main'?'selected':''}>Main feature</option>
+        <option value="extra" ${p.role==='extra'?'selected':''}>Extra</option>
+        <option value="skip" ${p.role==='skip'?'selected':''}>Skip</option></select>`;
+    const catSel = p.role === 'extra' ? `<select data-act="category" data-fid="${f.id}">${
+        cats.map(c => `<option ${c===p.category?'selected':''}>${esc(c)}</option>`).join('')}</select>` : '';
+    const nameIn = p.role === 'extra'
+      ? `<input class="nm" data-act="name" data-fid="${f.id}" value="${esc(p.name)}" title="File name in the library">` : '';
+    let tgt;
+    if(p.status === 'move') tgt = `<span class="muted">→</span> <b>${esc(relTarget(g, p.target))}</b>`;
+    else if(p.status === 'exists') tgt = `<span class="pill bad">already in library</span> ${esc(relTarget(g, p.target))}`;
+    else if(p.status === 'inplace') tgt = '<span class="pill dim">already in place</span>';
+    else if(p.status === 'excluded') tgt = '<span class="muted">movie not ticked</span>';
+    else if(p.status === 'unmatched') tgt = '<span class="muted">needs a match first</span>';
+    else tgt = '<span class="muted">stays where it is</span>';
+    const th = thumbs ? `<td style="width:104px"><img class="thumb" loading="lazy"
+        src="/api/library/thumb?id=${f.id}" alt="" onerror="this.style.visibility='hidden'"></td>` : '';
+    return `<tr class="${p.role === 'skip' ? 'skip' : ''}">
+      ${th}
+      <td><div class="fname">${p.role==='main' ? '<span class="pill main">Main</span> ' : ''}${esc(f.stem)}${esc(f.ext)}</div>${sub}${notes}</td>
+      <td class="num">${esc(f.hms)}</td>
+      <td class="num">${esc(f.quality)}</td>
+      <td class="num">${esc(f.sizeH)}</td>
+      <td class="ctl">${roleSel}</td>
+      <td class="ctl">${catSel}</td>
+      <td class="ctl">${nameIn}<div class="target">${tgt}</div></td>
+    </tr>`;
+  }).join('');
+  return `<div class="mbody">
+    <div class="row muted" style="font-size:12px; margin-bottom:8px">
+      Extras:
+      <button class="linklike" data-act="bulk" data-gid="${g.id}" data-role="extra">keep all</button>
+      <button class="linklike" data-act="bulk" data-gid="${g.id}" data-role="skip">skip all</button>
+      <button class="linklike" data-act="bulk" data-gid="${g.id}" data-role="">reset to suggestions</button>
+    </div>
+    <table class="files">
+      <thead><tr>${thumbs ? '<th></th>' : ''}<th>File</th><th>Length</th><th>Quality</th><th>Size</th>
+        <th>Role</th><th>Extras folder</th><th>Name in library</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderBar(){
+  const d = S.data;
+  if(!d){ show('actionbar', false); return; }
+  let files = 0, bytes = 0, movies = 0, exists = 0;
+  d.groups.forEach(g => { const c = counts(g); files += c.move; bytes += c.bytes;
+    exists += c.exists; if(c.move) movies++; });
+  show('actionbar', d.groups.length > 0 && !S.moving);
+  $('sum').innerHTML = files
+    ? `<b>${files}</b> file${files===1?'':'s'} from <b>${movies}</b> movie${movies===1?'':'s'} ready to move <span class="muted">(${gb(bytes)})</span>`
+      + (exists ? ` <span class="muted">· ${exists} already in the library will be left alone</span>` : '')
+    : '<span class="muted">Nothing selected to move — tick a matched movie.</span>';
+  const btn = $('move-btn');
+  btn.disabled = !files;
+  btn.textContent = S.armed ? `Yes — move ${files} file${files===1?'':'s'} now` : 'Move files';
+  btn.classList.toggle('danger', S.armed);
+  show('cancel-btn', S.armed);
+}
+
+/* ---------- edits -> ask the server where things land ---------- */
+let planSeq = 0;
+async function replan(){
+  const seq = ++planSeq;
+  try {
+    const d = await post('/api/library/plan', {overrides: S.overrides});
+    if(seq === planSeq){ S.data = d; S.armed = false; render(); }
+  } catch(e){ showErr(e.message); }
+}
+function setFile(fid, patch){
+  S.overrides.files[fid] = Object.assign({}, S.overrides.files[fid], patch);
+  replan();
+}
+function groupById(gid){ return S.data.groups.find(g => g.id === gid); }
+
+async function search(gid){
+  const q = (document.querySelector(`[data-q="${gid}"]`) || {}).value || '';
+  const y = (document.querySelector(`[data-y="${gid}"]`) || {}).value || '';
+  S.q[gid] = q; S.q[gid + ':y'] = y;
+  const note = $('sr-' + gid);
+  if(note) note.innerHTML = '<span class="spinner"></span>';
+  try {
+    S.cands[gid] = await post('/api/library/search', {query:q, year: y.trim() || null});
+    render();
+    const n2 = $('sr-' + gid);
+    if(n2 && !S.cands[gid].length) n2.textContent = 'No results.';
+  } catch(e){ showErr(e.message); if(note) note.textContent = ''; }
+}
+async function choose(gid, id){
+  showErr('');
+  try {
+    // a hand-picked match is a decision to include the movie...
+    S.overrides.groups[gid] = {include:true};
+    // ...and roles are re-suggested against the new movie's runtime
+    groupById(gid).files.forEach(f => { delete S.overrides.files[f.id]; });
+    S.data = await post('/api/library/select', {group:gid, id:Number(id), overrides:S.overrides});
+    S.matchOpen[gid] = false; S.open[gid] = true; S.armed = false;
+    render();
+  } catch(e){ showErr(e.message); }
+}
+
+/* ---------- move ---------- */
+async function startMove(){
+  showErr('');
+  try {
+    await post('/api/library/apply', {overrides:S.overrides, prune: $('prune').checked});
+  } catch(e){ S.armed = false; renderBar(); showErr(e.message); return; }
+  S.moving = true; S.armed = false;
+  show('actionbar', false); show('s-summary', false); show('s-skipped', false);
+  $('groups').innerHTML = ''; show('s-progress', true);
+  window.scrollTo({top:0, behavior:'smooth'});
+  try {
+    for(;;){
+      const st = await get('/api/library/apply/status');
+      renderMove(st);
+      if(!st.running) break;
+      await sleep(700);
+    }
+  } catch(e){ showErr(e.message); }
+  S.moving = false; S.data = null;
+}
+function renderMove(st){
+  const icon = {queued:'·', moving:'<span class="spinner"></span>', done:'<span style="color:var(--good)">✓</span>',
+                failed:'<span style="color:var(--bad)">✗</span>', skipped:'<span style="color:var(--warn)">–</span>'};
+  const tail = p => String(p || '').split(/[\\/]/).slice(-2).join('/');
+  $('move-list').innerHTML = st.items.map(i => `<div class="moverow">
+      <div>${icon[i.state] || '·'}</div>
+      <div><div class="fname">${esc(tail(i.target))}</div>
+        <div class="fsub">from ${esc(tail(i.src))}${i.error ? ` — <span style="color:var(--bad)">${esc(i.error)}</span>` : ''}</div></div>
+      <div>${i.state === 'moving' && i.pct > 0 ? `<div class="bar"><div style="width:${i.pct}%"></div></div>` :
+             `<span class="muted">${esc(i.state)}</span>`}</div>
+    </div>`).join('');
+  if(st.running){
+    const done = st.items.filter(i => i.state !== 'queued' && i.state !== 'moving').length;
+    $('move-banner').innerHTML = `<div class="banner warn"><span class="spinner"></span>
+      Moving… ${done} / ${st.items.length} done. Keep this page and the NAS connection open.</div>`;
+    return;
+  }
+  const ok = st.items.filter(i => i.state === 'done').length;
+  const bad = st.items.length - ok;
+  const pruned = (st.pruned || []).length
+    ? `<div class="muted" style="margin-top:6px">Removed emptied source folders: ${st.pruned.map(esc).join(', ')}</div>` : '';
+  $('move-banner').innerHTML =
+    (st.error ? `<div class="banner bad">⚠ ${esc(st.error)}</div>` : '') +
+    `<div class="banner ${bad ? 'warn' : 'good'}">
+      <b>${ok}</b> file${ok===1?'':'s'} moved${bad ? `, <b>${bad}</b> not moved (see the list)` : ''}.
+      ${st.log ? `<div class="muted" style="margin-top:6px">Log: <code>${esc(st.log)}</code></div>` : ''}
+      ${pruned}
+      <div class="row" style="margin-top:10px">
+        <button data-act="scan">Scan again</button>
+        ${st.log && ok ? `<button class="ghost" data-act="undo" data-log="${esc(st.log)}">Undo this move</button>` : ''}
+      </div></div>`;
+}
+async function undoMove(log){
+  showErr('');
+  try {
+    const r = await post('/api/library/undo', {log});
+    $('move-list').innerHTML = '';
+    $('move-banner').innerHTML = `<div class="banner good"><b>${r.restored}</b> file${r.restored===1?'':'s'} put back where they were.
+      ${r.problems.length ? '<div class="note">' + r.problems.map(esc).join('<br>') + '</div>' : ''}
+      <div class="row" style="margin-top:10px"><button data-act="scan">Scan again</button></div></div>`;
+  } catch(e){ showErr(e.message); }
+}
+
+/* ---------- events (delegated) ---------- */
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if(!el || el.tagName === 'SELECT' || (el.tagName === 'INPUT' && el.type !== 'checkbox')) return;
+  const a = el.dataset.act, gid = el.dataset.gid;
+  if(a === 'scan') scan();
+  else if(a === 'filter'){ S.filter = el.dataset.filter; render(); }
+  else if(a === 'expand-all'){ S.data.groups.forEach(g => S.open[g.id] = true); render(); }
+  else if(a === 'collapse-all'){ S.open = {}; S.matchOpen = {}; render(); }
+  else if(a === 'toggle-files'){ S.open[gid] = !S.open[gid]; render(); }
+  else if(a === 'toggle-match'){ S.matchOpen[gid] = !S.matchOpen[gid]; render(); }
+  else if(a === 'search') search(gid);
+  else if(a === 'choose') choose(gid, el.dataset.id);
+  else if(a === 'include'){ S.overrides.groups[gid] = {include: el.checked}; replan(); }
+  else if(a === 'bulk'){
+    const role = el.dataset.role;
+    groupById(gid).files.forEach(f => {
+      if(!role) delete S.overrides.files[f.id];
+      else if(planOf(f).role !== 'main')
+        S.overrides.files[f.id] = Object.assign({}, S.overrides.files[f.id], {role});
+    });
+    replan();
+  }
+  else if(a === 'move'){ if(!S.armed){ S.armed = true; renderBar(); } else startMove(); }
+  else if(a === 'cancel-move'){ S.armed = false; renderBar(); }
+  else if(a === 'undo') undoMove(el.dataset.log);
+});
+document.addEventListener('change', e => {
+  const el = e.target, a = el.dataset && el.dataset.act;
+  if(a === 'role') setFile(el.dataset.fid, {role: el.value});
+  else if(a === 'category') setFile(el.dataset.fid, {category: el.value});
+  else if(a === 'name') setFile(el.dataset.fid, {name: el.value.trim()});
+});
+document.addEventListener('input', e => {
+  const el = e.target;
+  if(el.dataset && el.dataset.q) S.q[el.dataset.q] = el.value;
+  if(el.dataset && el.dataset.y) S.q[el.dataset.y + ':y'] = el.value;
+});
+document.addEventListener('keydown', e => {
+  if(e.key !== 'Enter') return;
+  const el = e.target;
+  if(el.id === 'root') scan();
+  else if(el.dataset && (el.dataset.q || el.dataset.y)) search(el.dataset.q || el.dataset.y);
+});
+
+init();
+</script>
+</body>
+</html>
