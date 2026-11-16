@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, urlparse
 import diskrip as dr
 import discdb
 import library
+import paths
 from thumbs import Thumbnailer
 
 HOST = "127.0.0.1"
@@ -314,6 +315,9 @@ class App:
             if self.ripjob and self.ripjob.get("running"):
                 raise dr.DiskRipError("A rip is already in progress.")
             kind = body["kind"]
+            # refuse up front rather than after a long rip: the target root
+            # must be a real, writable library folder
+            dr.root_for(self.cfg, "movies" if kind == "movie" else "tv")
             items = []
             if kind == "movie":
                 mt = self.movie.main_title
@@ -348,6 +352,7 @@ class App:
         import shutil
         job = self.ripjob
         titles = {t.id: t for t in self.disc.titles}
+        root_name = "movies" if kind == "movie" else "tv"
         try:
             for item in job["items"]:
                 t = titles.get(item["title_id"])
@@ -373,8 +378,15 @@ class App:
                     item["error"] = self.mk.last_rip_error or "rip failed"
                     continue
                 try:
+                    dr.root_for(self.cfg, root_name)   # the share may have dropped
+                    paths.check_destination(target.parent)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(ripped), str(target))
+                except paths.RootError as e:
+                    item["status"] = "failed"
+                    item["error"] = str(e)
+                    job["root"] = e.name
+                    continue
                 except OSError as e:
                     item["status"] = "failed"
                     item["error"] = f"couldn't move to NAS: {e}"
@@ -438,6 +450,8 @@ class App:
                 job["phase"], job["done"], job["total"] = phase, done, total
             try:
                 self.lib = library.scan_library(self.cfg, self.tmdb, root, progress)
+            except paths.RootError as e:
+                job["error"], job["root"] = str(e), e.name
             except dr.DiskRipError as e:
                 job["error"] = str(e)
             except Exception as e:
@@ -496,6 +510,11 @@ class App:
             try:
                 log = library.apply_plan(items, self.cfg, lib, prune=prune)
                 job["log"], job["pruned"] = log.get("path"), log.get("pruned", [])
+            except paths.RootError as e:
+                job["error"], job["root"] = str(e), e.name
+                for i in todo:
+                    if i.get("state") == "queued":
+                        i["state"], i["error"] = "failed", "not started"
             except Exception as e:
                 traceback.print_exc()
                 job["error"] = f"{type(e).__name__}: {e}"

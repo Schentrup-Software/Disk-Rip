@@ -46,6 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import diskrip as dr
+import paths
 
 VIDEO_EXT = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts", ".mpg",
              ".mpeg", ".wmv", ".webm"}
@@ -107,7 +108,7 @@ def _fid(root, path):
 # ---------------------------------------------------------------------------
 # Locating the source folder (accepts a path or, on macOS, an smb:// URL)
 # ---------------------------------------------------------------------------
-def resolve_root(spec):
+def resolve_root(spec, work_dir=None):
     """Return the local Path for `spec`.
 
     `spec` may be a normal path, or an SMB URL such as
@@ -119,12 +120,8 @@ def resolve_root(spec):
         dr.die("No source folder given. Set 'rips_root' in config.json or pass --root.")
     m = re.match(r"^smb://(?:[^@/]+@)?([^/]+)/([^/]+)(/.*)?$", spec, re.I)
     if not m:
-        p = Path(spec).expanduser()
-        if not p.is_dir():
-            dr.die(f"Source folder not found: {p}\n"
-                   "If it is a NAS share, connect to it first (Finder > Go > "
-                   "Connect to Server), or give the smb:// address instead.")
-        return p
+        return paths.validate_root("rips", spec, must_write=False,
+                                   work_dir=work_dir)
     share, sub = m.group(2), (m.group(3) or "").strip("/")
     share = re.sub(r"%20", " ", share)
     if sys.platform != "darwin":
@@ -142,9 +139,7 @@ def resolve_root(spec):
         dr.die(f"Could not mount {spec}.\nConnect to it in Finder (Go > Connect "
                f"to Server), then try again - it should appear at {mount}.")
     p = mount / sub if sub else mount
-    if not p.is_dir():
-        dr.die(f"Folder not found on the share: {p}")
-    return p
+    return paths.validate_root("rips", str(p), must_write=False, work_dir=work_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +918,7 @@ class LibraryScan:
 def scan_library(cfg, tmdb, root=None, progress=None):
     """Scan the rips folder and return a LibraryScan with proposed roles and
     TMDB matches. Reads only - nothing is moved."""
-    root = resolve_root(root or cfg.get("rips_root") or "")
+    root = resolve_root(root or cfg.get("rips_root") or "", cfg.get("work_dir"))
     prober = Prober(cfg)
     if progress:
         progress("Listing folders", 0, 0)
@@ -994,7 +989,8 @@ def build_plan(scan, cfg, overrides=None):
     overrides = overrides or {}
     gov_all = overrides.get("groups") or {}
     fov_all = overrides.get("files") or {}
-    movie_root = Path(cfg["movie_root"]).expanduser()
+    movie_root = paths.validate_root("movies", cfg.get("movie_root"),
+                                     work_dir=cfg.get("work_dir"))
     taken = set()
     items = []
     for g in scan.groups:
@@ -1075,6 +1071,7 @@ def move_file(src, dst, on_bytes=None):
     """Move src to dst without ever overwriting. Same volume = instant rename;
     different volume = copy, verify, then delete the source."""
     src, dst = Path(src), Path(dst)
+    paths.check_destination(dst.parent)
     if dst.exists():
         raise FileExistsError(f"already exists: {dst}")
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1128,6 +1125,10 @@ def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
     written to work_dir/library-logs/). on_item(item) is called on each status
     change so a UI can show progress; items gain 'state', 'pct', 'error'."""
     todo = [i for i in items if i["status"] == "move"]
+    # check again right before writing: a share can drop between plan and apply
+    paths.validate_root("movies", cfg.get("movie_root"), work_dir=cfg.get("work_dir"))
+    if scan is not None:              # sources are removed after each move
+        paths.validate_root("rips", str(scan.root), work_dir=cfg.get("work_dir"))
     log_dir = Path(cfg["work_dir"]) / "library-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / time.strftime("organize-%Y%m%d-%H%M%S.json")
@@ -1393,7 +1394,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except dr.DiskRipError as e:
+    except (dr.DiskRipError, paths.RootError) as e:
         print(dr.red("\nERROR: ") + str(e), file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:

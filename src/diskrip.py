@@ -31,6 +31,7 @@ from collections import Counter
 from pathlib import Path
 
 import discdb
+import paths
 
 # Windows console: force UTF-8 so the ✓/⚠/Δ symbols don't crash cp1252, and
 # turn on ANSI escape processing so colors render instead of showing raw codes.
@@ -1258,7 +1259,7 @@ def _x(s):
 # ---------------------------------------------------------------------------
 def execute_movie(mk, p, cfg, dry_run):
     folder, fname = p.folder_and_file()
-    dest_dir = Path(cfg["movie_root"]) / folder
+    dest_dir = root_for(cfg, "movies") / folder
     final = dest_dir / fname
     print(f"\n{bold('Ripping main feature')} -> {final}")
     if final.exists():
@@ -1279,7 +1280,7 @@ def execute_movie(mk, p, cfg, dry_run):
 
 
 def execute_tv(mk, p, cfg, dry_run):
-    season_dir = Path(cfg["tv_root"]) / p.show_folder() / f"Season {p.season_number}"
+    season_dir = root_for(cfg, "tv") / p.show_folder() / f"Season {p.season_number}"
     plan = p.plan()
     print(f"\n{bold('Ripping ' + str(len(plan)) + ' episode(s)')} -> {season_dir}")
     for idx, (t, ep) in enumerate(plan, 1):
@@ -1327,8 +1328,20 @@ def load_config(path):
     cfg = json.loads(p.read_text(encoding="utf-8-sig"))
     if "PASTE_YOUR" in cfg.get("tmdb_api_key", ""):
         die("Set 'tmdb_api_key' in your config (free key from themoviedb.org).")
-    Path(cfg["work_dir"]).mkdir(parents=True, exist_ok=True)
+    work = str(cfg.get("work_dir") or "")
+    if work and not paths.looks_like_url(work) and Path(work).expanduser().is_absolute():
+        Path(work).expanduser().mkdir(parents=True, exist_ok=True)
+    # Record what is wrong with each root instead of failing here: the web UI
+    # should still start and say so. Planning, moving and ripping re-validate
+    # the root they need and refuse to run on a bad one.
+    cfg["_roots"], cfg["_root_warnings"] = paths.check_roots(cfg)
     return cfg
+
+
+def root_for(cfg, name):
+    """Validated Path of the movies/tv root, or raise paths.RootError."""
+    return paths.validate_root(name, cfg.get(paths.ROOT_KEYS[name]),
+                               work_dir=cfg.get("work_dir"))
 
 
 def pick_drive(mk, requested):
@@ -1366,6 +1379,8 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    for w in cfg["_root_warnings"]:
+        print(yellow("Warning: " + w))
     min_len = int(cfg.get("min_length_minutes", 15)) * 60
     movie_min = int(cfg.get("movie_min_minutes", 70)) * 60
     mk = MakeMKV(cfg["makemkvcon"])
@@ -1485,7 +1500,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except DiskRipError as e:
+    except (DiskRipError, paths.RootError) as e:
         print(red("\nERROR: ") + str(e), file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
