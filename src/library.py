@@ -966,3 +966,80 @@ def scan_library(cfg, tmdb, root=None, progress=None):
     scan = LibraryScan(root, groups, skipped)
     scan.identifier = ident
     return scan
+
+
+# ---------------------------------------------------------------------------
+# Plan: where would every file go?
+# ---------------------------------------------------------------------------
+def default_include(g):
+    return bool(g.details) and g.confidence in ("high", "medium", "manual") \
+        and not g.busy and not g.looks_tv
+
+
+def build_plan(scan, cfg, overrides=None):
+    """Resolve every file to a target path.
+
+    overrides (all optional, as sent by the web UI):
+      {"groups": {gid: {"include": bool}},
+       "files":  {fid: {"role": main|extra|skip, "category": str, "name": str}}}
+
+    Returns a list of items: {file, group, src, role, category, name, target,
+    status} where status is one of
+      move      - will be moved to target
+      exists    - target already exists (left untouched, never overwritten)
+      inplace   - already at its target
+      skip      - role is 'skip' (stays where it is)
+      excluded  - its movie is unticked
+      unmatched - its movie has no TMDB match yet"""
+    overrides = overrides or {}
+    gov_all = overrides.get("groups") or {}
+    fov_all = overrides.get("files") or {}
+    movie_root = Path(cfg["movie_root"]).expanduser()
+    taken = set()
+    items = []
+    for g in scan.groups:
+        gov = gov_all.get(g.id) or {}
+        include = bool(gov.get("include", default_include(g)))
+        folder = g.folder_name()
+        for f in sorted(g.files, key=lambda f: (-f.pixels, -f.size, f.rel.lower())):
+            fov = fov_all.get(f.id) or {}
+            role = fov.get("role") if fov.get("role") in ROLES else f.role
+            category = fov.get("category") if fov.get("category") in CATEGORIES else f.category
+            name = dr.sanitize(str(fov.get("name") or f.name)) or f.stem
+            item = {"file": f.id, "group": g.id, "src": str(f.path), "role": role,
+                    "category": category, "name": name, "target": None,
+                    "size": f.size, "status": "skip"}
+            items.append(item)
+            if role == "skip":
+                continue
+            if not folder:
+                item["status"] = "unmatched"
+                continue
+            if role == "main":
+                base, n = f"{folder} - {f.quality}", 1
+                target = movie_root / folder / (base + f.ext)
+                while str(target).lower() in taken:
+                    n += 1
+                    target = movie_root / folder / f"{base} v{n}{f.ext}"
+            else:
+                n = 1
+                target = movie_root / folder / category / (name + f.ext)
+                while str(target).lower() in taken:
+                    n += 1
+                    target = movie_root / folder / category / f"{name} ({n}){f.ext}"
+            item["target"] = str(target)
+            if not include:               # shown as "would go here", never moved
+                item["status"] = "excluded"
+                continue
+            taken.add(str(target).lower())
+            try:
+                same = target.exists() and os.path.samefile(target, f.path)
+            except OSError:
+                same = False
+            if same:
+                item["status"] = "inplace"
+            elif target.exists():
+                item["status"] = "exists"
+            else:
+                item["status"] = "move"
+    return items
