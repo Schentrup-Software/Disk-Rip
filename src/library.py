@@ -46,6 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import diskrip as dr
+import libdb
 import paths
 
 VIDEO_EXT = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts", ".mpg",
@@ -161,19 +162,28 @@ class Prober:
                    "resolution with ffprobe (part of ffmpeg).\n"
                    "macOS: brew install ffmpeg     Windows: winget install Gyan.FFmpeg\n"
                    "...or set 'ffprobe' in config.json to its full path.")
-        self.cache_path = Path(cfg["work_dir"]) / "library-probe-cache.json"
+        self.db = libdb.open_db(cfg["work_dir"])
         self._lock = threading.Lock()
-        try:
-            self.cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self.cache = {}
+        self.cache = self.db.load_probes()
+        self._dirty = {}
+        if not self.cache:
+            # one-time import of the JSON cache older versions kept
+            legacy = Path(cfg["work_dir"]) / "library-probe-cache.json"
+            try:
+                self.cache = json.loads(legacy.read_text(encoding="utf-8"))
+                self._dirty = dict(self.cache)
+            except (OSError, ValueError):
+                self.cache = {}
 
     def save(self):
-        try:
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self.cache_path.write_text(json.dumps(self.cache), encoding="utf-8")
-        except OSError:
-            pass
+        """Write new results to the database (call after a batch of probes)."""
+        with self._lock:
+            dirty, self._dirty = self._dirty, {}
+        if dirty:
+            try:
+                self.db.save_probes(dirty)
+            except Exception as e:      # a cache: never fail a scan over it
+                print(f"Warning: couldn't save probe results ({e})", file=sys.stderr)
 
     def probe(self, path):
         """{duration, width, height, audio, chapters, title, ok} for one file."""
@@ -211,9 +221,9 @@ class Prober:
         except (OSError, ValueError, subprocess.TimeoutExpired):
             pass
         if info["ok"]:   # never cache a failed read - the file may still be copying
+            entry = {"size": st.st_size, "mtime": int(st.st_mtime), "info": info}
             with self._lock:
-                self.cache[key] = {"size": st.st_size, "mtime": int(st.st_mtime),
-                                   "info": info}
+                self.cache[key] = self._dirty[key] = entry
         return info
 
 
