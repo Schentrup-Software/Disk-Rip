@@ -516,8 +516,10 @@ class App:
             try:
                 log = library.apply_plan(items, self.cfg, lib, prune=prune)
                 job["log"], job["pruned"] = log.get("path"), log.get("pruned", [])
-            except paths.RootError as e:
-                job["error"], job["root"] = str(e), e.name
+            except (paths.RootError, dr.DiskRipError) as e:
+                job["error"] = str(e)
+                if isinstance(e, paths.RootError):
+                    job["root"] = e.name
                 for i in todo:
                     if i.get("state") == "queued":
                         i["state"], i["error"] = "failed", "not started"

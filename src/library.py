@@ -1077,6 +1077,66 @@ def move_file(src, dst, on_bytes=None):
     return "copied"
 
 
+# ---------------------------------------------------------------------------
+# Free space: check the whole job fits before the first file is touched
+# ---------------------------------------------------------------------------
+SPACE_HEADROOM = 1 << 30        # always leave at least 1 GiB free
+
+
+def _existing(path):
+    p = Path(os.path.abspath(str(path)))
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return p
+
+
+def needs_copy(src, dst_dir):
+    """True when moving src into dst_dir is a real copy, not a rename: the two
+    are on different filesystems, or (in a container) different mounts."""
+    a, b = _existing(src), _existing(dst_dir)
+    if os.stat(a).st_dev != os.stat(b).st_dev:
+        return True
+    ma, mb = paths.mount_point_of(a), paths.mount_point_of(b)
+    return ma is not None and mb is not None and ma != mb
+
+
+def free_bytes(path):
+    st = os.statvfs(str(_existing(path)))
+    return st.f_bavail * st.f_frsize
+
+
+def check_space(moves):
+    """moves: iterable of (src, dst, size). Raise DiskRipError, before anything
+    is moved, if a destination filesystem hasn't room for every copy it will
+    receive plus headroom (1 GiB or 2%, whichever is more). Renames within one
+    filesystem need no space and are not counted.
+
+    Note: on ZFS a snapshot keeps the blocks of files moved away, so moving
+    files off a snapshotted dataset frees nothing - only real free space
+    counts."""
+    need = {}
+    for src, dst, size in moves:
+        dst_dir = Path(dst).parent
+        try:
+            if not needs_copy(src, dst_dir):
+                continue
+            dev = os.stat(_existing(dst_dir)).st_dev
+        except OSError:
+            continue
+        entry = need.setdefault(dev, [0, dst_dir])
+        entry[0] += size
+    problems = []
+    for total, where in need.values():
+        margin = max(SPACE_HEADROOM, total // 50)
+        free = free_bytes(where)
+        if total + margin > free:
+            problems.append(f"{_existing(where)}: needs {human_size(total)} plus "
+                            f"{human_size(margin)} headroom, but only "
+                            f"{human_size(free)} is free")
+    if problems:
+        dr.die("Not enough free space - nothing was moved.\n  " + "\n  ".join(problems))
+
+
 def _sidecars(src):
     """Non-video files that belong to a video ('Movie.srt', 'Movie.en.srt')."""
     src = Path(src)
@@ -1112,6 +1172,21 @@ def prune_empty(folder):
     return True
 
 
+def _planned_moves(todo):
+    out = []
+    for i in todo:
+        try:
+            out.append((i["src"], i["target"], os.path.getsize(i["src"])))
+        except OSError:
+            continue
+        for sc in _sidecars(i["src"]):
+            try:
+                out.append((str(sc), i["target"], sc.stat().st_size))
+            except OSError:
+                pass
+    return out
+
+
 def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
     """Execute every item whose status is 'move'. Returns the log dict (also
     written to work_dir/library-logs/). on_item(item) is called on each status
@@ -1121,6 +1196,7 @@ def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
     paths.validate_root("movies", cfg.get("movie_root"), work_dir=cfg.get("work_dir"))
     if scan is not None:              # sources are removed after each move
         paths.validate_root("rips", str(scan.root), work_dir=cfg.get("work_dir"))
+    check_space(_planned_moves(todo))
     log_dir = Path(cfg["work_dir"]) / "library-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / time.strftime("organize-%Y%m%d-%H%M%S.json")
@@ -1181,6 +1257,13 @@ def undo(log_path):
     log = json.loads(Path(log_path).read_text(encoding="utf-8"))
     restored, problems = 0, []
     library_root = Path(log.get("movie_root") or "/").expanduser()
+    # everything that will actually be copied back must fit first
+    back = []
+    for mv in log.get("moves", []):
+        src, dst = Path(mv["src"]), Path(mv["dst"])
+        if dst.is_file() and not src.exists():
+            back.append((dst, src, dst.stat().st_size))
+    check_space(back)
     for mv in reversed(log.get("moves", [])):
         src, dst = Path(mv["src"]), Path(mv["dst"])
         if not dst.exists():
