@@ -947,7 +947,29 @@ def scan_library(cfg, tmdb, root=None, progress=None):
         list(ex.map(work, groups))
     scan = LibraryScan(root, groups, skipped)
     scan.identifier = ident
+    scan.libindex = index_library(cfg, prober, groups, progress)
     return scan
+
+
+def index_library(cfg, prober, groups=(), progress=None):
+    """Index <movie_root> and read the folders that already hold a scanned
+    movie, so planning is instant. None if movie_root isn't usable (planning
+    reports that)."""
+    from libindex import LibraryIndex
+    try:
+        movie_root = paths.validate_root("movies", cfg.get("movie_root"), must_write=False,
+                                         work_dir=cfg.get("work_dir"))
+    except paths.RootError:
+        return None
+    if progress:
+        progress("Checking the movie library", 0, 0)
+    idx = LibraryIndex(movie_root, prober).refresh()
+    wanted = sorted({n for g in groups if g.details for n in idx.matches(g.details)})
+    for k, name in enumerate(wanted, 1):
+        if progress:
+            progress("Checking the movie library", k, len(wanted))
+        idx.videos(name)
+    return idx
 
 
 # ---------------------------------------------------------------------------
@@ -958,32 +980,243 @@ def default_include(g):
         and not g.busy and not g.looks_tv
 
 
-def build_plan(scan, cfg, overrides=None):
+QUARANTINE = ".diskrip-duplicates"     # hidden: Plex and Jellyfin skip it
+
+
+def _same_feature(a, b):
+    """Two feature-length files are the same cut (lengths within 1.5%)."""
+    return abs(a - b) <= max(90.0, max(a, b) * 0.015)
+
+
+def _same_extra(a, b):
+    """Two shorter videos are the same: length within a second, and the same
+    height or (nearly) the same size."""
+    if abs(a["duration"] - b["duration"]) > 1.0:
+        return False
+    return a["height"] == b["height"] or \
+        abs(a["size"] - b["size"]) <= max(a["size"], b["size"]) * 0.005
+
+
+def _free_name(path, taken, fmt="{stem} ({n}){ext}"):
+    """`path`, or the first '<stem> (n)<ext>' not in `taken` (lower-cased)."""
+    path = Path(path)
+    n = 1
+    cand = path
+    while str(cand).lower() in taken:
+        n += 1
+        cand = path.with_name(fmt.format(stem=path.stem, n=n, ext=path.suffix))
+    taken.add(str(cand).lower())
+    return cand
+
+
+def _feature_name(folder_dir, final, quality, ext, taken):
+    """'<final> - 1080p.mkv', or '<final> - 1080p v2.mkv' if that is taken."""
+    return _free_name(folder_dir / f"{final} - {quality}{ext}", taken, "{stem} v{n}{ext}")
+
+
+def _sidecar_rels(all_rels, video_rel):
+    """Non-video files that belong to video `video_rel` ('Movie.srt',
+    'Movie.en.srt', 'Movie.nfo' next to 'Movie.mkv'), as relative paths."""
+    vdir, vname = os.path.split(video_rel)
+    vstem = Path(vname).stem
+    out = []
+    for r in all_rels:
+        d, n = os.path.split(r)
+        if d == vdir and r != video_rel and n.startswith(vstem + ".") \
+                and Path(n).suffix.lower() not in VIDEO_EXT:
+            out.append(r)
+    return out
+
+
+def _follow(src_rel, video_rel, video_dst):
+    """Where a sidecar goes when its video moves to `video_dst`."""
+    rest = os.path.basename(src_rel)[len(Path(video_rel).stem):]
+    return Path(video_dst).with_name(Path(video_dst).stem + rest)
+
+
+def _feature_min(g, cfg):
+    movie_min = int(cfg.get("movie_min_minutes", 70)) * 60
+    return min(movie_min, g.runtime * 60 * 0.8) if g.runtime else movie_min
+
+
+def plan_library(g, idx, movie_root, rename, feature_min, stamp):
+    """Work out what the library already holds for group `g` and how to fold
+    it into one standard folder.
+
+    Returns (final, ops, virtual, summary):
+      final    name of the folder this movie ends up in
+      ops      library changes, in the order they must run:
+                 rename-folder  the kept folder -> the standard name (if rename)
+                 rename-file    a feature -> '<final> - <quality>.ext' (if rename)
+                 merge          a file from a duplicate folder into the final one
+                 quarantine     a duplicate copy -> <movie_root>/.diskrip-duplicates/
+                 remove-folder  a duplicate folder, once empty
+      virtual  the videos the final folder will hold after the ops:
+               [{"rel", "duration", "height", "size", "quality", "top"}]
+      summary  for the UI
+    Nothing is ever deleted or overwritten: a duplicate copy is moved to the
+    hidden quarantine folder (an instant rename on the same dataset) for you to
+    delete once you're happy."""
+    canon = g.folder_name()
+    names = idx.matches(g.details) if (idx is not None and g.details) else []
+    summary = {"existing": names, "final": canon, "rename": rename,
+               "renameAvailable": False, "ops": [], "duplicates": 0}
+    if not names:
+        return canon, [], [], summary
+    vids = {n: idx.videos(n) for n in names}
+
+    def weight(n):
+        f = idx.folders.get(n) or {}
+        return (n == canon, bool(f.get("imdb") or f.get("tmdb")),
+                sum(v["size"] for v in vids[n]))
+
+    keep = max(names, key=weight)
+    final = canon if rename else keep
+    final_dir = movie_root / final
+    ops = []
+
+    def op(kind, src, dst=None, note="", size=0):
+        ops.append({"op": kind, "src": str(src), "target": str(dst) if dst else None,
+                    "note": note, "size": size})
+
+    if keep != canon:
+        summary["renameAvailable"] = True
+        if rename:
+            op("rename-folder", movie_root / keep, final_dir,
+               f"rename '{keep}' to the standard name")
+    keep_files = idx.all_files(keep)
+    taken = {str(final_dir / rel).lower() for rel in keep_files}
+    virtual = [dict(v) for v in vids[keep]]
+
+    # features in the kept folder that don't follow '<final> - <quality>'
+    for v in sorted(virtual, key=lambda v: v["rel"].lower()):
+        if not (v["top"] and v["duration"] >= feature_min):
+            continue
+        stem = Path(v["rel"]).stem
+        if stem.lower().startswith(f"{canon} - ".lower()):
+            continue
+        summary["renameAvailable"] = True
+        if rename:
+            taken.discard(str(final_dir / v["rel"]).lower())
+            new = _feature_name(final_dir, final, v["quality"], Path(v["rel"]).suffix, taken)
+            if new.name != v["rel"]:
+                op("rename-file", final_dir / v["rel"], new,
+                   f"rename the {v['quality']} feature to the standard name", v["size"])
+                for sc in _sidecar_rels(keep_files, v["rel"]):
+                    sdst = _follow(sc, v["rel"], new)
+                    taken.discard(str(final_dir / sc).lower())
+                    taken.add(str(sdst).lower())
+                    op("rename-file", final_dir / sc, sdst, "goes with the feature")
+                v["rel"] = new.name
+
+    # fold every other copy of this movie into the final folder
+    for other in [n for n in names if n != keep]:
+        ovids = {v["rel"]: v for v in vids[other]}
+        files = idx.all_files(other)
+        placed = {}                       # video rel -> (op, destination)
+        for rel in [r for r in files if r in ovids]:
+            v = ovids[rel]
+            src = movie_root / other / rel
+            qdst = movie_root / QUARANTINE / stamp / other / rel
+            if v["top"] and v["duration"] >= feature_min:
+                twin = next((x for x in virtual if x["top"] and x["duration"] >= feature_min
+                             and _same_feature(x["duration"], v["duration"])
+                             and x["quality"] == v["quality"]), None)
+                if twin is not None:
+                    op("quarantine", src, qdst, f"same feature as '{twin['rel']}'", v["size"])
+                    placed[rel] = ("quarantine", qdst)
+                    summary["duplicates"] += 1
+                    continue
+                dst = (_feature_name(final_dir, final, v["quality"], src.suffix, taken)
+                       if rename else _free_name(final_dir / rel, taken))
+                op("merge", src, dst, f"{v['quality']} feature from '{other}'", v["size"])
+                virtual.append(dict(v, rel=dst.name))
+            else:
+                twin = next((x for x in virtual if _same_extra(x, v)), None)
+                if twin is not None:
+                    op("quarantine", src, qdst, f"same video as '{twin['rel']}'", v["size"])
+                    placed[rel] = ("quarantine", qdst)
+                    summary["duplicates"] += 1
+                    continue
+                dst = _free_name(final_dir / rel, taken)
+                op("merge", src, dst, f"from '{other}'", v["size"])
+                virtual.append(dict(v, rel=os.path.relpath(dst, final_dir)))
+            placed[rel] = ("merge", dst)
+        followers = {sc: vrel for vrel in placed for sc in _sidecar_rels(files, vrel)}
+        for rel in [r for r in files if r not in ovids]:
+            src = movie_root / other / rel
+            if rel in followers:
+                kind, vdst = placed[followers[rel]]
+                dst = _follow(rel, followers[rel], vdst)
+                if kind == "merge":
+                    dst = _free_name(dst, taken)
+                op(kind, src, dst, "goes with its video")
+            elif str(final_dir / rel).lower() in taken:
+                op("quarantine", src, movie_root / QUARANTINE / stamp / other / rel,
+                   "the kept folder already has this file")
+            else:
+                taken.add(str(final_dir / rel).lower())
+                op("merge", src, final_dir / rel, f"from '{other}'")
+        op("remove-folder", movie_root / other, None, f"remove '{other}' once empty")
+    summary["final"] = final
+    summary["ops"] = [dict(o, src=os.path.relpath(o["src"], movie_root),
+                           target=os.path.relpath(o["target"], movie_root) if o["target"] else None)
+                      for o in ops]
+    for o in ops:
+        if o["target"] and o["op"] in ("rename-file", "merge"):
+            taken.add(o["target"].lower())
+    summary["_taken"] = taken
+    return final, ops, virtual, summary
+
+
+def build_plan(scan, cfg, overrides=None, summary=None):
     """Resolve every file to a target path.
 
     overrides (all optional, as sent by the web UI):
-      {"groups": {gid: {"include": bool}},
+      {"rename": bool,                     # rename library folders (default on)
+       "groups": {gid: {"include": bool, "rename": bool}},
        "files":  {fid: {"role": main|extra|skip, "category": str, "name": str}}}
 
-    Returns a list of items: {file, group, src, role, category, name, target,
-    status} where status is one of
-      move      - will be moved to target
-      exists    - target already exists (left untouched, never overwritten)
-      inplace   - already at its target
-      skip      - role is 'skip' (stays where it is)
-      excluded  - its movie is unticked
-      unmatched - its movie has no TMDB match yet"""
+    Returns a list of items. File items: {file, group, src, role, category,
+    name, target, size, status, final} where status is one of
+      move       - will be moved to target
+      duplicate  - the library already has this video (stays where it is)
+      exists     - target already exists (left untouched, never overwritten)
+      inplace    - already at its target
+      skip       - role is 'skip' (stays where it is)
+      excluded   - its movie is unticked
+      unmatched  - its movie has no TMDB match yet
+    Library items (kind "lib", see plan_library) come before their movie's
+    files, with status 'lib' (or 'excluded').
+
+    `summary`, if a dict, is filled with per-group library info for the UI."""
     overrides = overrides or {}
     gov_all = overrides.get("groups") or {}
     fov_all = overrides.get("files") or {}
+    rename_all = bool(overrides.get("rename", True))
     movie_root = paths.validate_root("movies", cfg.get("movie_root"),
                                      work_dir=cfg.get("work_dir"))
+    idx = getattr(scan, "libindex", None)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
     taken = set()
     items = []
     for g in scan.groups:
         gov = gov_all.get(g.id) or {}
         include = bool(gov.get("include", default_include(g)))
-        folder = g.folder_name()
+        rename = bool(gov.get("rename", rename_all))
+        final, virtual = g.folder_name(), []
+        if g.details:
+            fmin = _feature_min(g, cfg)
+            final, ops, virtual, info = plan_library(g, idx, movie_root, rename, fmin, stamp)
+            taken |= info.pop("_taken", set())
+            if summary is not None:
+                summary[g.id] = info
+            for o in ops:
+                items.append(dict(o, kind="lib", group=g.id, role="library", final=final,
+                                  status="lib" if include else "excluded"))
+        else:
+            fmin = _feature_min(g, cfg)
+        folder_dir = movie_root / final if final else None
         for f in sorted(g.files, key=lambda f: (-f.pixels, -f.size, f.rel.lower())):
             fov = fov_all.get(f.id) or {}
             role = fov.get("role") if fov.get("role") in ROLES else f.role
@@ -991,30 +1224,39 @@ def build_plan(scan, cfg, overrides=None):
             name = dr.sanitize(str(fov.get("name") or f.name)) or f.stem
             item = {"file": f.id, "group": g.id, "src": str(f.path), "role": role,
                     "category": category, "name": name, "target": None,
-                    "size": f.size, "status": "skip"}
+                    "size": f.size, "status": "skip", "final": final}
             items.append(item)
             if role == "skip":
                 continue
-            if not folder:
+            if not final:
                 item["status"] = "unmatched"
                 continue
+            me = {"duration": f.duration, "height": f.height, "size": f.size,
+                  "quality": f.quality}
             if role == "main":
-                base, n = f"{folder} - {f.quality}", 1
-                target = movie_root / folder / (base + f.ext)
-                while str(target).lower() in taken:
-                    n += 1
-                    target = movie_root / folder / f"{base} v{n}{f.ext}"
+                twin = next((v for v in virtual if v["top"] and v["duration"] >= fmin
+                             and _same_feature(v["duration"], f.duration)
+                             and v["quality"] == f.quality), None)
+                other = next((v for v in virtual if v["top"] and v["duration"] >= fmin
+                              and _same_feature(v["duration"], f.duration)), None)
+                target = _feature_name(folder_dir, final, f.quality, f.ext, taken)
+                if twin is None and other is not None:
+                    item["note"] = (f"adds a {f.quality} version next to the "
+                                    f"{other['quality']} one already in the library")
             else:
-                n = 1
-                target = movie_root / folder / category / (name + f.ext)
-                while str(target).lower() in taken:
-                    n += 1
-                    target = movie_root / folder / category / f"{name} ({n}){f.ext}"
+                twin = next((v for v in virtual if _same_extra(v, me)), None)
+                target = _free_name(folder_dir / category / (name + f.ext), taken)
             item["target"] = str(target)
+            if twin is not None:
+                item["status"] = "duplicate"
+                item["dup_of"] = twin["rel"]
+                taken.discard(str(target).lower())
+                continue
             if not include:               # shown as "would go here", never moved
                 item["status"] = "excluded"
                 continue
-            taken.add(str(target).lower())
+            virtual.append(dict(me, rel=os.path.relpath(target, folder_dir),
+                                top=role == "main"))
             try:
                 same = target.exists() and os.path.samefile(target, f.path)
             except OSError:
@@ -1083,6 +1325,8 @@ def move_file(src, dst, on_bytes=None):
     except OSError as e:
         if e.errno != errno.EXDEV:
             raise
+    if src.is_dir():
+        raise OSError(errno.EXDEV, f"can't move a folder to another filesystem: {src}")
     _copy_then_remove(src, dst, on_bytes)
     return "copied"
 
@@ -1185,6 +1429,8 @@ def prune_empty(folder):
 def _planned_moves(todo):
     out = []
     for i in todo:
+        if not i.get("target") or os.path.isdir(i["src"]):
+            continue                      # folder renames and removals
         try:
             out.append((i["src"], i["target"], os.path.getsize(i["src"])))
         except OSError:
@@ -1197,11 +1443,48 @@ def _planned_moves(todo):
     return out
 
 
+def _prepare_quarantine(movie_root):
+    """<movie_root>/.diskrip-duplicates, marked so media servers skip it."""
+    q = Path(movie_root) / QUARANTINE
+    q.mkdir(exist_ok=True)
+    notes = {".plexignore": "*\n", ".ignore": "",
+             "README.txt": "Duplicate copies Disk-Rip found while merging library folders.\n"
+                           "Nothing here is in your library any more. Delete a folder once\n"
+                           "you're happy with the merge, or use Undo to put it all back.\n"}
+    for name, text in notes.items():
+        f = q / name
+        if not f.exists():
+            try:
+                f.write_text(text, encoding="utf-8")
+            except OSError:
+                pass
+
+
+def _apply_lib_op(i, log, movie_root):
+    """Run one library change from plan_library (see there)."""
+    if i["op"] == "remove-folder":
+        if Path(i["src"]).exists() and not prune_empty(i["src"]):
+            i["state"], i["error"] = "skipped", "still has files in it - left in place"
+            return
+        log.setdefault("pruned_library", []).append(i["src"])
+        i["state"], i["pct"] = "done", 100
+        return
+    if i["op"] == "quarantine":
+        _prepare_quarantine(movie_root)
+    move_file(i["src"], i["target"])
+    log["moves"].append({"src": i["src"], "dst": i["target"], "how": i["op"]})
+    i["state"], i["pct"] = "done", 100
+
+
 def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
-    """Execute every item whose status is 'move'. Returns the log dict (also
+    """Execute every item whose status is 'move' or 'lib' (library changes run
+    before their movie's files, in plan order). Returns the log dict (also
     written to work_dir/library-logs/). on_item(item) is called on each status
-    change so a UI can show progress; items gain 'state', 'pct', 'error'."""
-    todo = [i for i in items if i["status"] == "move"]
+    change so a UI can show progress; items gain 'state', 'pct', 'error'.
+
+    If a movie's library folder can't be renamed, the rest of that movie is
+    skipped: moving its files anyway would create a second folder again."""
+    todo = [i for i in items if i["status"] in ("move", "lib")]
     # check again right before writing: a share can drop between plan and apply
     paths.validate_root("movies", cfg.get("movie_root"), work_dir=cfg.get("work_dir"))
     if scan is not None:              # sources are removed after each move
@@ -1220,9 +1503,29 @@ def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
         if on_item:
             on_item(i)
 
+    def save():
+        _write_log(log_path, {k: v for k, v in log.items() if k != "path"})
+
+    movie_root = Path(cfg["movie_root"])
+    failed_groups, done_groups = set(), set()
     for i in todo:
+        if i["group"] in failed_groups:
+            i["state"], i["error"] = "skipped", "a library change for this movie failed first"
+            tell(i)
+            continue
         i["state"], i["pct"] = "moving", 0
         tell(i)
+        if i.get("kind") == "lib":
+            try:
+                _apply_lib_op(i, log, movie_root)
+                done_groups.add(i["group"])
+            except (OSError, paths.RootError) as e:
+                i["state"], i["error"] = "failed", f"{getattr(e, 'strerror', None) or e}"
+                if i["op"] == "rename-folder":
+                    failed_groups.add(i["group"])
+            save()
+            tell(i)
+            continue
 
         def on_bytes(done, total, _i=i):
             pct = int(done * 100 / total) if total else 100
@@ -1243,16 +1546,30 @@ def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
                 except OSError:
                     pass
             i["state"], i["pct"] = "done", 100
+            done_groups.add(i["group"])
         except FileExistsError as e:
             i["state"], i["error"] = "skipped", str(e)
+        except paths.RootError as e:
+            i["state"], i["error"] = "failed", str(e)
         except OSError as e:
             i["state"], i["error"] = "failed", f"{e.strerror or e}"
-        _write_log(log_path, {k: v for k, v in log.items() if k != "path"})
+        save()
         tell(i)
+
+    # remember which folder holds each movie, so the next audit matches it by id
+    idx = getattr(scan, "libindex", None)
+    if idx is not None:
+        finals = {i["group"]: i.get("final") for i in todo if i.get("final")}
+        for g in scan.groups:
+            if g.id in done_groups and finals.get(g.id):
+                try:
+                    idx.learn(finals[g.id], g.details)
+                except Exception:
+                    pass
 
     if prune and scan is not None:
         for folder in sorted({scan.files[i["file"]].folder for i in todo
-                              if i.get("state") == "done" and i["file"] in scan.files}):
+                              if i.get("state") == "done" and i.get("file") in scan.files}):
             try:
                 if prune_empty(scan.root / folder):
                     log["pruned"].append(folder)
@@ -1310,7 +1627,7 @@ def print_plan(scan, items, cfg, show_skips=True):
     for i in items:
         by_group.setdefault(i["group"], []).append(i)
     movie_root = Path(cfg["movie_root"])
-    counts = {"move": 0, "exists": 0, "inplace": 0}
+    counts = {"move": 0, "exists": 0, "inplace": 0, "duplicate": 0, "lib": 0}
     for g in scan.groups:
         gi = by_group.get(g.id, [])
         main = g.main_file()
@@ -1338,8 +1655,15 @@ def print_plan(scan, items, cfg, show_skips=True):
                    f"\"{g.folders[0]['name']}=tmdb:{g.details.get('id')}\", "
                    "or pass --include-low" if g.confidence == "low" else "unticked")
             print(dr.yellow(f"  (not moved - {why})"))
+        for i in [i for i in gi if i.get("kind") == "lib"]:
+            if i["status"] == "lib":
+                counts["lib"] += 1
+            src = os.path.relpath(i["src"], movie_root)
+            dst = f" -> {os.path.relpath(i['target'], movie_root)}" if i["target"] else ""
+            print(dr.yellow(f"    library  {i['op']}: {src}{dst}") + dr.dim(f"  ({i['note']})"))
         order = {"main": 0, "extra": 1, "skip": 2}
-        for i in sorted(gi, key=lambda i: (order[i["role"]], i["src"].lower())):
+        files = [i for i in gi if i.get("file")]
+        for i in sorted(files, key=lambda i: (order[i["role"]], i["src"].lower())):
             f = scan.files[i["file"]]
             src = f"{f.folder}/{f.rel}"
             meta = f"{dr.hms(f.duration):>8} {f.quality:>5} {human_size(f.size):>8}"
@@ -1354,12 +1678,15 @@ def print_plan(scan, items, cfg, show_skips=True):
                 tgt = rel.split(os.sep, 1)[1] if os.sep in rel else rel
             else:
                 tgt = "?"
-            st = {"exists": dr.red("  ● already in library (left alone)"),
+            st = {"exists": dr.red("  ● name already taken (left alone)"),
+                  "duplicate": dr.dim(f"  (already in library as {i.get('dup_of')} - left alone)"),
                   "inplace": dr.dim("  (already in place)")}.get(i["status"], "")
             if i["status"] in counts:
                 counts[i["status"]] += 1
             print(f"    {tag}  {src[:58]:<58} {meta}")
             print(f"           {dr.dim('->')} {tgt}{st}")
+            if i.get("note"):
+                print(dr.dim(f"           {i['note']}"))
             for n in f.notes:
                 print(dr.yellow(f"           ! {n}"))
     if scan.skipped:
@@ -1367,7 +1694,8 @@ def print_plan(scan, items, cfg, show_skips=True):
         for s in scan.skipped:
             print(dr.dim(f"  {s['name']}  - {s['reason']}"))
     print(f"\n{dr.bold(str(counts['move']))} file(s) to move into {movie_root}"
-          + (f", {counts['exists']} already there" if counts["exists"] else ""))
+          + (f", {counts['lib']} library change(s)" if counts["lib"] else "")
+          + (f", {counts['duplicate']} already there" if counts["duplicate"] else ""))
     return counts
 
 
@@ -1389,6 +1717,8 @@ def main():
     ap.add_argument("--yes", action="store_true", help="Move without asking.")
     ap.add_argument("--prune-empty", action="store_true",
                     help="After moving, delete source folders that are left empty.")
+    ap.add_argument("--no-rename", action="store_true",
+                    help="Don't rename existing library folders/files to the standard name.")
     ap.add_argument("--hide-skips", action="store_true",
                     help="Don't list skipped files in the plan.")
     ap.add_argument("--undo", metavar="LOG", help="Reverse a previous run from its log file.")
@@ -1445,19 +1775,20 @@ def main():
                     g.confidence = "manual" if g.confidence != "low" else "low"
             classify_group(g, cfg)
 
-    overrides = {"groups": {}}
+    overrides = {"groups": {}, "rename": not args.no_rename}
     if args.include_low:
         for g in scan.groups:
             if g.details and not g.busy and not g.looks_tv:
                 overrides["groups"][g.id] = {"include": True}
     items = build_plan(scan, cfg, overrides)
     counts = print_plan(scan, items, cfg, show_skips=not args.hide_skips)
-    if args.dry_run or not counts["move"]:
+    if args.dry_run or not (counts["move"] or counts["lib"]):
         if args.dry_run:
             print(dr.dim("[dry-run] nothing was moved."))
         return
     if not args.yes:
-        ans = input(f"\nMove {counts['move']} file(s) now? [y/N] ").strip().lower()
+        ans = input(f"\nMove {counts['move']} file(s) and make {counts['lib']} library "
+                    "change(s) now? [y/N] ").strip().lower()
         if ans not in ("y", "yes"):
             print("Nothing moved.")
             return
@@ -1467,7 +1798,7 @@ def main():
             print(f"\r  moving {Path(i['src']).name[:50]:<50} {i.get('pct', 0):3d}%",
                   end="", flush=True)
         elif i.get("state") == "done":
-            print(f"\r  {dr.green('✓')} {Path(i['target']).name[:70]:<70}")
+            print(f"\r  {dr.green('✓')} {Path(i['target'] or i['src']).name[:70]:<70}")
         elif i.get("state") in ("failed", "skipped"):
             print(f"\r  {dr.red('✗')} {Path(i['src']).name}: {i.get('error')}")
 

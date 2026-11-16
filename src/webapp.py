@@ -430,10 +430,21 @@ class App:
         lib = self._need_lib()
         overrides = overrides or {}
         data = lib.to_json(self.cfg)
-        items = library.build_plan(lib, self.cfg, overrides)
+        summary = {}
+        items = library.build_plan(lib, self.cfg, overrides, summary)
         data["plan"] = {i["file"]: {"role": i["role"], "category": i["category"],
                                     "name": i["name"], "target": i["target"],
-                                    "status": i["status"]} for i in items}
+                                    "status": i["status"], "note": i.get("note"),
+                                    "dupOf": i.get("dup_of")}
+                        for i in items if i.get("file")}
+        # what each movie's library folder already holds, and the changes
+        # (rename, merge, set duplicates aside) the move would make there
+        data["library"] = summary
+        data["rename"] = bool(overrides.get("rename", True))
+        idx = getattr(lib, "libindex", None)
+        covered = {n for v in summary.values() for n in v.get("existing", [])}
+        data["libraryDupes"] = ([d for d in idx.duplicates() if not covered & set(d)]
+                                if idx is not None else [])
         gov = overrides.get("groups") or {}
         data["include"] = {
             g.id: bool((gov.get(g.id) or {}).get("include", library.default_include(g)))
@@ -503,7 +514,7 @@ class App:
             if self.applyjob and self.applyjob.get("running"):
                 raise dr.DiskRipError("A move is already in progress.")
             items = library.build_plan(lib, self.cfg, body.get("overrides"))
-            todo = [i for i in items if i["status"] == "move"]
+            todo = [i for i in items if i["status"] in ("move", "lib")]
             if not todo:
                 raise dr.DiskRipError("Nothing to move - tick at least one matched movie.")
             for i in todo:
@@ -541,6 +552,7 @@ class App:
             "running": job["running"], "error": job["error"], "log": job["log"],
             "pruned": job["pruned"],
             "items": [{"src": i["src"], "target": i["target"], "role": i["role"],
+                       "op": i.get("op"), "note": i.get("note"),
                        "state": i.get("state", "queued"), "pct": i.get("pct", 0),
                        "error": i.get("error")} for i in job["items"]],
         }
