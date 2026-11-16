@@ -266,10 +266,16 @@ class MakeMKV:
         """True if the MakeMKV desktop app is open. It holds the optical drive
         exclusively, so makemkvcon can't read the disc while it runs."""
         try:
-            out = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq makemkv.exe", "/NH"],
-                capture_output=True, text=True, timeout=10).stdout.lower()
-            return "makemkv.exe" in out
+            if os.name == "nt":
+                out = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq makemkv.exe", "/NH"],
+                    capture_output=True, text=True, timeout=10).stdout.lower()
+                return "makemkv.exe" in out
+            # macOS / Linux: the GUI process is "makemkv" (the CLI we drive is
+            # "makemkvcon", which -x does not match)
+            r = subprocess.run(["pgrep", "-x", "makemkv"],
+                               capture_output=True, text=True, timeout=10)
+            return r.returncode == 0 and bool(r.stdout.strip())
         except Exception:
             return False
 
