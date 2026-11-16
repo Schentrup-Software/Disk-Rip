@@ -1,0 +1,38 @@
+# Local test of the Disk-Rip image.
+#
+#   DISKRIP_TMDB_API_KEY=<your key> docker compose up --build
+#   open http://localhost:8765/library
+#
+# By default the four folders are empty test folders under ./.local/. To try
+# real files, point the variables at them, e.g. a mounted NAS share:
+#   DISKRIP_RIPS=/Volumes/rips DISKRIP_MOVIES=/Volumes/Movies docker compose up
+# Docker Desktop must be allowed to share those paths (Settings > Resources >
+# File sharing). Moving deletes each source after it is copied: test on copies,
+# snapshot first, or tick "Keep originals in rips (copy)".
+#
+# Docker Desktop on a Mac can't pass an optical drive through, so the Rip page
+# finds no drives here; on Linux, uncomment `devices`.
+services:
+  disk-rip:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    image: disk-rip:dev
+    ports:
+      - "8765:8765"
+    environment:
+      DISKRIP_TMDB_API_KEY: ${DISKRIP_TMDB_API_KEY:-}
+      MAKEMKV_KEY: ${MAKEMKV_KEY:-}        # blank = MakeMKV's free beta key
+      PUID: ${PUID:-568}
+      PGID: ${PGID:-568}
+      TZ: ${TZ:-America/Los_Angeles}
+    # devices:                             # both nodes of the drive
+    #   - /dev/sr0:/dev/sr0
+    #   - /dev/sg1:/dev/sg1
+    volumes:
+      - ${DISKRIP_CONFIG:-./.local/config}:/config
+      - ${DISKRIP_RIPS:-./.local/rips}:/rips
+      - ${DISKRIP_MOVIES:-./.local/movies}:/movies
+      - ${DISKRIP_TV:-./.local/tv}:/tv
+    restart: unless-stopped

@@ -31,6 +31,7 @@ from collections import Counter
 from pathlib import Path
 
 import discdb
+import paths
 
 # Windows console: force UTF-8 so the ✓/⚠/Δ symbols don't crash cp1252, and
 # turn on ANSI escape processing so colors render instead of showing raw codes.
@@ -48,6 +49,7 @@ if os.name == "nt":
 AP_NAME = 2
 AP_CHAPTER_COUNT = 8
 AP_DURATION = 9
+AP_DISK_SIZE_BYTES = 11
 AP_SOURCE_FILENAME = 16
 AP_VIDEO_SIZE = 19
 AP_SEGMENTS_MAP = 26
@@ -69,6 +71,7 @@ class Title:
         self.output_name = ""        # name MakeMKV will write, e.g. LABEL_t00.mkv
         self.resolution = ""         # e.g. 1920x1080
         self.segmap = ""             # segment map, e.g. "1,2,3" - fingerprints content
+        self.size_bytes = 0          # size of the ripped file, as MakeMKV estimates it
         # Assignment decided during confirmation:
         self.assign = None           # dict describing what to do, or None = skip
 
@@ -124,7 +127,8 @@ def parse_duration(text):
 
 
 def sanitize(name):
-    """Make a title safe for a Windows filename, matching TMM's conventions."""
+    """Make a title safe for a filename on any OS / SMB share (Windows rules are
+    the strictest, so we follow them), matching TMM's conventions."""
     if name is None:
         return ""
     # "Title: Subtitle" -> "Title - Subtitle"
@@ -175,8 +179,19 @@ class MakeMKV:
     def __init__(self, exe):
         self.exe = exe
         self.last_rip_error = ""   # why the most recent rip() failed, if it did
-        if not Path(exe).exists():
-            die(f"makemkvcon not found at: {exe}\nFix 'makemkvcon' in your config.")
+        if not exe or not Path(exe).is_file():
+            hint = ("This container has no makemkvcon: the image was built without "
+                    "MakeMKV. Rebuild it and redeploy the app."
+                    if paths.in_container() else
+                    "On macOS it lives inside the app: "
+                    "/Applications/MakeMKV.app/Contents/MacOS/makemkvcon"
+                    if sys.platform == "darwin" else
+                    "On Linux it is /usr/bin/makemkvcon once MakeMKV is installed."
+                    if sys.platform.startswith("linux") else
+                    "On Windows it is usually C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe")
+            die(f"makemkvcon not found at: {exe or '(not set)'}\n"
+                f"Fix 'makemkvcon' in your config. {hint}\n"
+                "(MakeMKV is only needed to rip discs - the Library page works without it.)")
 
     # Abort a MakeMKV call if it produces no output at all for this long. A
     # healthy scan/rip emits status or progress lines every second or two; total
@@ -230,11 +245,14 @@ class MakeMKV:
                 proc.kill()
             except Exception:
                 pass
-            proc.wait()
-            return None, lines
-
         proc.wait()
-        return proc.returncode, lines
+        # the server calls makemkvcon on every drive refresh: an unclosed pipe
+        # per call would slowly use up the process's file handles
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        return (None if stalled else proc.returncode), lines
 
     @staticmethod
     def _fields(rest):
@@ -266,10 +284,16 @@ class MakeMKV:
         """True if the MakeMKV desktop app is open. It holds the optical drive
         exclusively, so makemkvcon can't read the disc while it runs."""
         try:
-            out = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq makemkv.exe", "/NH"],
-                capture_output=True, text=True, timeout=10).stdout.lower()
-            return "makemkv.exe" in out
+            if os.name == "nt":
+                out = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq makemkv.exe", "/NH"],
+                    capture_output=True, text=True, timeout=10).stdout.lower()
+                return "makemkv.exe" in out
+            # macOS / Linux: the GUI process is "makemkv" (the CLI we drive is
+            # "makemkvcon", which -x does not match)
+            r = subprocess.run(["pgrep", "-x", "makemkv"],
+                               capture_output=True, text=True, timeout=10)
+            return r.returncode == 0 and bool(r.stdout.strip())
         except Exception:
             return False
 
@@ -329,6 +353,8 @@ class MakeMKV:
                     t.segmap = val
                 elif aid == AP_OUTPUT_FILENAME:
                     t.output_name = val
+                elif aid == AP_DISK_SIZE_BYTES:
+                    t.size_bytes = int(val) if val.isdigit() else 0
             elif ln.startswith("SINFO:"):
                 f = self._fields(ln[6:])
                 tid, aid, val = int(f[0]), int(f[2]), f[4] if len(f) > 4 else ""
@@ -1013,7 +1039,7 @@ def show_movie_proposal(p):
     print(f"  Main title : t{mt.id:02d}  {hms(mt.duration)}  {mt.resolution or '?'}  "
           f"{mt.chapters}ch{delta}")
     print(f"  {dim('Folder')}     : {folder}")
-    print(f"  {dim('File')}       : {folder}\\{fname}")
+    print(f"  {dim('File')}       : {folder}{os.sep}{fname}")
 
 
 def show_tv_proposal(p):
@@ -1021,7 +1047,7 @@ def show_tv_proposal(p):
     print(bold(f"  TV  —  Season {p.season_number}, starting at episode {p.start_episode}"))
     print(bold("=" * 70))
     print(f"  Identified : {bold(p.title)} ({p.year})   imdb-{p.imdb or '?'}")
-    print(f"  {dim('Show folder')}: {p.show_folder()}\\Season {p.season_number}\\")
+    print(f"  {dim('Show folder')}: {p.show_folder()}{os.sep}Season {p.season_number}{os.sep}")
     if not p.episodes:
         print(yellow("  ! No TMDB episode data for this season "
                      "(runtimes/titles unavailable) - mapping by disc order only."))
@@ -1243,9 +1269,88 @@ def _x(s):
 # ---------------------------------------------------------------------------
 # Rip + file execution
 # ---------------------------------------------------------------------------
+RIP_TMP = ".diskrip-tmp"           # hidden: Plex and Jellyfin skip it
+RIP_HEADROOM = 2 << 30              # leave 2 GiB free after a rip
+_RIP_JOB_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}-t\d+$")
+
+
+def _rip_tmp_root(root):
+    tmp = Path(root) / RIP_TMP
+    tmp.mkdir(exist_ok=True)
+    for name, text in ((".plexignore", "*\n"), (".ignore", "")):
+        f = tmp / name
+        if not f.exists():
+            try:
+                f.write_text(text, encoding="utf-8")
+            except OSError:
+                pass
+    return tmp
+
+
+def rip_into_place(mk, drive_index, title, final, root, on_progress=None):
+    """Rip `title` straight onto the library's own filesystem and rename it
+    into place, so a rip is written once and never copied.
+
+    MakeMKV picks the file name itself (title_t00.mkv), so it writes into
+    <root>/.diskrip-tmp/<job>-t<NN>/ and the one .mkv found there is renamed
+    to `final` (same filesystem, so instant and atomic). A taken name gets
+    ' (2)'; nothing is overwritten. A failed rip's partial file is removed.
+    Returns the final Path, or None if MakeMKV failed (mk.last_rip_error)."""
+    final, root = Path(final), Path(root)
+    need = (title.size_bytes or 0) + RIP_HEADROOM
+    free = paths.free_bytes(root)
+    if free < need:
+        size = f"{title.size_bytes / 1e9:.1f} GB" if title.size_bytes else "an unknown amount"
+        die(f"Not enough space in {root} to rip title {title.id}: it needs {size} "
+            f"plus 2 GB headroom, but only {free / 1e9:.1f} GB is free.")
+    job = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + os.urandom(3).hex()
+    tmpdir = _rip_tmp_root(root) / f"{job}-t{title.id:02d}"
+    tmpdir.mkdir()
+    ripped = mk.rip(drive_index, title, str(tmpdir), on_progress)
+    mkvs = sorted(tmpdir.glob("*.mkv"))
+    if not ripped:
+        shutil.rmtree(tmpdir, ignore_errors=True)    # a partial rip is useless
+        return None
+    if len(mkvs) != 1:
+        die(f"Expected one ripped file in {tmpdir}, found {len(mkvs)}; left there "
+            "for you to look at.")
+    final.parent.mkdir(parents=True, exist_ok=True)
+    target, n = final, 1
+    while target.exists():
+        n += 1
+        target = final.with_name(f"{final.stem} ({n}){final.suffix}")
+    os.replace(mkvs[0], target)
+    try:
+        tmpdir.rmdir()
+    except OSError:
+        pass
+    return target
+
+
+def sweep_rip_tmp(root, max_age_hours=24):
+    """Delete rip folders left in <root>/.diskrip-tmp by a crash or restart,
+    once older than max_age_hours. Only folders named like Disk-Rip's own jobs
+    are touched. Returns the names removed."""
+    tmp = Path(root) / RIP_TMP
+    removed = []
+    try:
+        entries = list(tmp.iterdir())
+    except OSError:
+        return removed
+    cutoff = time.time() - max_age_hours * 3600
+    for d in entries:
+        try:
+            if d.is_dir() and _RIP_JOB_RE.match(d.name) and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d)
+                removed.append(d.name)
+        except OSError:
+            continue
+    return removed
+
+
 def execute_movie(mk, p, cfg, dry_run):
     folder, fname = p.folder_and_file()
-    dest_dir = Path(cfg["movie_root"]) / folder
+    dest_dir = root_for(cfg, "movies") / folder
     final = dest_dir / fname
     print(f"\n{bold('Ripping main feature')} -> {final}")
     if final.exists():
@@ -1255,18 +1360,17 @@ def execute_movie(mk, p, cfg, dry_run):
         print(dim("  [dry-run] would rip title "
                   f"t{p.main_title.id:02d} and move to the path above"))
         return
-    ripped = mk.rip(p.disc.drive_index, p.main_title, cfg["work_dir"])
-    if not ripped:
+    final = rip_into_place(mk, p.disc.drive_index, p.main_title, final,
+                           root_for(cfg, "movies"))
+    if not final:
         die("Rip failed - MakeMKV returned an error (see messages above).")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(ripped), str(final))
     print(green(f"  ✓ {final}"))
     if cfg.get("write_nfo"):
         write_movie_nfo(dest_dir / (fname[:-4] + ".nfo"), p)
 
 
 def execute_tv(mk, p, cfg, dry_run):
-    season_dir = Path(cfg["tv_root"]) / p.show_folder() / f"Season {p.season_number}"
+    season_dir = root_for(cfg, "tv") / p.show_folder() / f"Season {p.season_number}"
     plan = p.plan()
     print(f"\n{bold('Ripping ' + str(len(plan)) + ' episode(s)')} -> {season_dir}")
     for idx, (t, ep) in enumerate(plan, 1):
@@ -1281,12 +1385,10 @@ def execute_tv(mk, p, cfg, dry_run):
         if dry_run:
             print(dim(f"      [dry-run] would move to {final}"))
             continue
-        ripped = mk.rip(p.disc.drive_index, t, cfg["work_dir"])
-        if not ripped:
+        final = rip_into_place(mk, p.disc.drive_index, t, final, root_for(cfg, "tv"))
+        if not final:
             print(red(f"      ! rip failed for t{t.id:02d}, skipping"))
             continue
-        season_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(ripped), str(final))
         print(green(f"      ✓ {final}"))
         if cfg.get("write_nfo"):
             write_episode_nfo(season_dir / (fname[:-4] + ".nfo"), p, ep)
@@ -1304,6 +1406,27 @@ def die(msg):
     raise DiskRipError(msg)
 
 
+MAKEMKVCON_CANDIDATES = (
+    "makemkvcon", "makemkvcon64",
+    "/usr/bin/makemkvcon", "/usr/local/bin/makemkvcon",
+    "/Applications/MakeMKV.app/Contents/MacOS/makemkvcon",
+    r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe",
+    r"C:\Program Files\MakeMKV\makemkvcon64.exe",
+)
+
+
+def find_makemkvcon(configured=""):
+    """The configured makemkvcon if it exists, else the first one found on
+    PATH or in its usual install locations, else the configured value."""
+    if configured and Path(configured).is_file():
+        return configured
+    for c in MAKEMKVCON_CANDIDATES:
+        found = shutil.which(c) or (c if os.path.isabs(c) and Path(c).is_file() else None)
+        if found:
+            return found
+    return configured or ""
+
+
 def load_config(path):
     p = Path(path)
     if not p.exists():
@@ -1314,8 +1437,24 @@ def load_config(path):
     cfg = json.loads(p.read_text(encoding="utf-8-sig"))
     if "PASTE_YOUR" in cfg.get("tmdb_api_key", ""):
         die("Set 'tmdb_api_key' in your config (free key from themoviedb.org).")
-    Path(cfg["work_dir"]).mkdir(parents=True, exist_ok=True)
+    cfg["makemkvcon"] = find_makemkvcon(cfg.get("makemkvcon") or "")
+    # On macOS, smb://host/share roots become their /Volumes/share folder.
+    unresolved = paths.resolve_config_roots(cfg)
+    work = str(cfg.get("work_dir") or "")
+    if work and not paths.looks_like_url(work) and Path(work).expanduser().is_absolute():
+        Path(work).expanduser().mkdir(parents=True, exist_ok=True)
+    # Record what is wrong with each root instead of failing here: the web UI
+    # should still start and say so. Planning, moving and ripping re-validate
+    # the root they need and refuse to run on a bad one.
+    cfg["_unresolved"] = unresolved
+    cfg["_roots"], cfg["_root_warnings"] = paths.check_roots(cfg, errors=unresolved)
     return cfg
+
+
+def root_for(cfg, name):
+    """Validated Path of the movies/tv root, or raise paths.RootError."""
+    return paths.validate_root(name, cfg.get(paths.ROOT_KEYS[name]),
+                               work_dir=cfg.get("work_dir"))
 
 
 def pick_drive(mk, requested):
@@ -1353,6 +1492,8 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    for w in cfg["_root_warnings"]:
+        print(yellow("Warning: " + w))
     min_len = int(cfg.get("min_length_minutes", 15)) * 60
     movie_min = int(cfg.get("movie_min_minutes", 70)) * 60
     mk = MakeMKV(cfg["makemkvcon"])
@@ -1365,7 +1506,8 @@ def main():
         return
 
     drive_index = pick_drive(mk, args.drive)
-    # capture the optical device path (e.g. "E:") so TheDiscDb can hash the disc
+    # capture the optical device path ("E:" on Windows, "/dev/rdisk4" on macOS)
+    # so TheDiscDb can hash the disc
     for idx, _n, _l, _loaded, device in mk.list_drives():
         if idx == drive_index:
             disc_device = device
@@ -1471,7 +1613,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except DiskRipError as e:
+    except (DiskRipError, paths.RootError) as e:
         print(red("\nERROR: ") + str(e), file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:

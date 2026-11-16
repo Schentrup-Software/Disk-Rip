@@ -24,6 +24,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+import discdb
+
 
 class Thumbnailer:
     def __init__(self, ffmpeg_path, work_dir, makemkvcon_path=None, opts=None):
@@ -71,6 +73,13 @@ class Thumbnailer:
         env = os.environ.copy()
         if self._libmmbd:
             env["PATH"] = str(self._libmmbd.parent) + os.pathsep + env.get("PATH", "")
+            if os.name != "nt":
+                # macOS / Linux: libbluray honors LIBAACS_PATH / LIBBDPLUS_PATH.
+                # It appends the platform extension itself, so pass the path
+                # without it ('.../lib/libmmbd_new', not '.../libmmbd_new.dylib').
+                base = re.sub(r"\.(?:dylib|so(?:\.\d+)*)$", "", str(self._libmmbd))
+                env.setdefault("LIBAACS_PATH", base)
+                env.setdefault("LIBBDPLUS_PATH", base)
         return env
 
     def _ensure_aacs_dlls(self):
@@ -81,6 +90,8 @@ class Thumbnailer:
         and the feature simply yields no thumbnails."""
         if not self.ffmpeg or not self._libmmbd:
             return False
+        if os.name != "nt":
+            return True   # handled by LIBAACS_PATH in _build_env, nothing to copy
         ff_dir = Path(self.ffmpeg).resolve().parent
         try:
             src_size = self._libmmbd.stat().st_size
@@ -97,9 +108,15 @@ class Thumbnailer:
         if not makemkvcon_path:
             return None
         d = Path(makemkvcon_path).parent
-        for name in ("libmmbd64.dll", "libmmbd.dll", "libmmbd.so.0", "libmmbd.dylib"):
-            if (d / name).exists():
-                return d / name
+        # Windows: next to makemkvcon64.exe. macOS: MakeMKV.app/Contents/lib/
+        # (makemkvcon is in Contents/MacOS/). Linux: /usr/lib.
+        dirs = [d, d.parent / "lib", Path("/usr/lib"), Path("/usr/local/lib")]
+        names = ("libmmbd64.dll", "libmmbd.dll", "libmmbd_new.dylib",
+                 "libmmbd.dylib", "libmmbd.so.0")
+        for folder in dirs:
+            for name in names:
+                if (folder / name).exists():
+                    return folder / name
         return None
 
     # --- extraction ------------------------------------------------------
@@ -129,8 +146,13 @@ class Thumbnailer:
             return out
 
         device = disc.device.rstrip("\\/")          # "F:"
-        # libbluray on Windows expects the drive root, e.g. bluray:F:\
-        src = f"bluray:{device}\\" if re.fullmatch(r"[A-Za-z]:", device) else f"bluray:{device}"
+        if re.fullmatch(r"[A-Za-z]:", device):
+            # libbluray on Windows expects the drive root, e.g. bluray:F:\
+            src = f"bluray:{device}\\"
+        else:
+            # macOS / Linux: libbluray wants the mounted folder, not /dev/rdiskN
+            root = discdb.disc_root(disc.device)
+            src = f"bluray:{root}" if root else f"bluray:{device}"
         cmd = [
             self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
             "-playlist", str(playlist),

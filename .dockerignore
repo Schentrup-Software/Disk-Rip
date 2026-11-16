@@ -1,0 +1,15 @@
+# Only src/, ui/, LICENSE and docker/ go into the image.
+# config.json holds your TMDB key: never bake it into an image.
+.git
+.github
+.local
+**/__pycache__
+*.pyc
+**/.DS_Store
+config.json
+_work
+smb:
+demo
+install
+tests
+*.mkv

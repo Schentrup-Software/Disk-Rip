@@ -15,3 +15,7 @@ libbdplus.dll
 
 # Static demo site assembled by the GitHub Pages workflow (CI only)
 _site
+.DS_Store
+
+# Local Docker test folders (docker-compose.yml)
+.local/

@@ -15,5 +15,9 @@
   "thumb_width": 240,
   "discdb": true,
   "discdb_endpoint": "https://thediscdb.com/graphql/",
-  "discdb_timeout": 4
+  "discdb_timeout": 4,
+  "rips_root": "",
+  "ffprobe": "",
+  "library_ignore": [],
+  "extras_min_seconds": 60
 }
