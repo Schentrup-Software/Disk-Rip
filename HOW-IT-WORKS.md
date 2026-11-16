@@ -2,8 +2,8 @@
 
 Details behind the features in the [README](README.md): how discs are identified
 (including the TheDiscDb instant match), how episodes are mapped, how thumbnails
-and multi-disc handling work, plus the full configuration and command-line
-reference.
+and multi-disc handling work, how [library mode](#library-mode) organizes folders
+you've already ripped, plus the full configuration and command-line reference.
 
 Paths below use placeholders like `\\SERVER\media\tv` and
 `C:\Users\<you>\Disk-Rip` — substitute your own.
@@ -77,7 +77,8 @@ offline, the API changed, a burned disc hashes to nothing — silently falls bac
 to the normal flow. The feature only ever *adds* signal.
 
 **Caching & privacy.** Results are cached under
-`%APPDATA%\Disk-Rip\discdb-cache` (hits kept indefinitely, misses re-checked
+`%APPDATA%\Disk-Rip\discdb-cache` (macOS:
+`~/Library/Application Support/Disk-Rip/discdb-cache`; hits kept indefinitely, misses re-checked
 after a week), so re-scanning a disc — common in a multi-disc box-set session —
 doesn't re-query. The only thing sent to TheDiscDb is the 16-byte content hash;
 no filenames, paths, or personal data. Turn the whole feature off with
@@ -185,6 +186,113 @@ Install a libbluray-enabled ffmpeg with `winget install Gyan.FFmpeg` (its "full"
 build includes libbluray) and point `ffmpeg` at the `.exe` (or leave it as
 `"ffmpeg"` if it's on your PATH).
 
+**macOS:** nothing is copied. The disc is read from where macOS mounted it
+(`/Volumes/<LABEL>`), and libbluray is pointed at MakeMKV's `libmmbd` inside
+`MakeMKV.app` through the `LIBAACS_PATH` / `LIBBDPLUS_PATH` environment
+variables. Homebrew's regular `ffmpeg` has no `bluray:` protocol; install
+`ffmpeg-full` for disc thumbnails. This path has had far less testing than the
+Windows one — if a frame can't be read you simply get no picture. (Thumbnails on
+the Library page read ordinary files and work with any ffmpeg.)
+
+---
+
+## Library mode
+
+For discs you ripped *before* using Disk-Rip (or ripped by hand in the MakeMKV
+app): a folder where every sub-folder is one ripped disc and the files inside are
+whatever MakeMKV called them.
+
+```
+/Volumes/rips/
+  Coco (2017)/Coco (2017).mkv
+  Coco - disk 2/Coco_t04.mkv, Dante.mkv, ...
+  Coco Bonus Disc/Deleted Scene - To the Bridge.mkv, ...
+  IROBOT_US/title_t00.mkv ... title_t22.mkv
+```
+
+Open the **Organize a folder** tab (`/library`) or run `src/library.py`. Nothing
+is read from an optical drive, so MakeMKV isn't needed — only `ffprobe` (part of
+ffmpeg), which reads each file's length, resolution, audio-track count and
+chapter count from the file header. That is fast even on a NAS share, and results
+are cached in `work_dir`.
+
+### 1. Which folders are the same movie
+
+Each folder name is cleaned into a title: a `(2017)` year is kept as a hint;
+`disk 2`, `Disc 2`, `Bonus Disc`, `Special Features`, `BLU-RAY`/`DVD`/`4K`, a raw
+label's region suffix (`IROBOT_US`), and everything after ` AKA ` are dropped.
+Folders that reduce to the same title are **merged into one movie** — so
+`Coco (2017)`, `Coco - disk 2` and `Coco Bonus Disc` become one entry, while
+`Shrek` and `Shrek 2` stay separate. (Two folders also land in the same movie
+folder if you match them to the same TMDB entry by hand.)
+
+A folder that contains only other folders (an `Output/Movies/...` tree, say) is
+not a ripped disc: it's listed under *Folders left alone* and not descended
+into. Scan it on its own if you want its contents organized. The configured
+`movie_root` and anything in `library_ignore` are skipped too.
+
+### 2. Which movie it is
+
+The title is searched on TMDB and the top results are scored on name, year (if
+the folder had one) and — the strong signal — **how closely the film's runtime
+matches the longest file in the group**. That's what separates the 2016 *Doctor
+Strange* (115 min) from the 2007 animated one (76 min) without asking. If the
+plain title finds nothing, a leading studio possessive is dropped
+(`Marvel's Doctor Strange`), the title tag MakeMKV wrote into the files is
+tried, and a squashed label is tried split in two (`IROBOT` → `I ROBOT`) — a
+split is only believed when its runtime matches.
+
+Each movie gets a confidence: **high** (runtime agrees), **medium** (name agrees,
+nothing to check the runtime against), or **low**. High and medium are ticked for
+moving; low, unmatched, TV-looking and still-being-written folders are left
+unticked until you say otherwise. *Change match* searches TMDB again and shows
+each candidate's runtime next to your file's.
+
+### 3. Which file is what
+
+| Role | Rule |
+|------|------|
+| **Main feature** | The file whose length matches TMDB's runtime (±3 min); failing that, the best-resolution, longest file of at least `movie_min_minutes`. A second feature of the same length at a *different* resolution (4K + Blu-ray combo) is kept as a second version; at the same resolution it's a duplicate playlist and is skipped. |
+| **Extra** | Everything else that isn't junk. Files already sitting in an extras sub-folder keep that category. Otherwise the category comes from the name (`Deleted…` → Deleted Scenes, `…Trailer`/`Promo` → Trailers, `Making of` → Behind The Scenes, …); named extras default to **Featurettes**, unnamed ones (`title_t07`) to **Other** as `Extra t07`. MakeMKV names are tidied: `F1-SF_02_The_Anatomy_Of_A_Crash_t11` → `The Anatomy Of A Crash`. |
+| **Skipped** | No audio track (warning/logo loops); `TMPL` / `Main Menu` / `WRN` / `warning` in the name; shorter than `extras_min_seconds`; same length *and* size as another file (duplicate); a short unnamed 4K clip on a 4K disc (menu background); HD at under 3 Mbit/s (a static screen); an unnamed clip with 5+ audio tracks (a fragment of the feature, common on Disney discs); unreadable files. |
+
+Every skip shows its reason, and every role, category and name can be changed in
+the web UI before anything moves. Skipped files are simply left where they are.
+
+### 4. Where things go
+
+```
+<movie_root>/Coco (2017) [imdb-tt2380307]/
+    Coco (2017) [imdb-tt2380307] - 2160p.mkv
+    Deleted Scenes/Deleted Scene - To the Bridge.mkv
+    Featurettes/Dante.mkv
+    Trailers/Belong - Australia Trailer.mkv
+```
+
+The extras folders — `Behind The Scenes`, `Deleted Scenes`, `Featurettes`,
+`Interviews`, `Scenes`, `Shorts`, `Trailers`, `Other` — are the ones both Plex
+and Jellyfin recognize. Subtitle/`.nfo` files named after a video travel with it.
+
+### 5. Moving, safely
+
+- Files are **moved, not copied**. With `movie_root` on the same volume/share as
+  the rips this is an instant rename; across volumes it's copy → verify size →
+  delete source, with progress (slow for 50 GB files over a network — keep the
+  library on the same share).
+- **Nothing is overwritten**: a target that already exists is flagged and left.
+- **Nothing is deleted**, unless you tick *Remove emptied source folders*
+  (`--prune-empty`), which removes a source folder only when all that's left in
+  it is empty sub-folders and `.DS_Store` files.
+- Every run writes `work_dir/library-logs/organize-<date>.json`. **Undo** (button
+  after a move, or `library.py --undo <log>`) puts every file back.
+- A folder with a file modified in the last three minutes is assumed to be a rip
+  in progress and is left unticked.
+
+**Limits.** Movies only — a folder that looks like a TV disc (several
+episode-length files, no feature) is flagged and left alone; rip TV from the
+disc so the Play-All ordering can be used. Unnamed extras stay unnamed
+(`Extra t07`) unless you rename them; the per-file thumbnails are there to help.
+
 ---
 
 ## Command-line reference
@@ -203,7 +311,21 @@ py src\diskrip.py --config path\to\config.json
 
 py src\webapp.py                           # web UI on http://127.0.0.1:8765
 py src\webapp.py --port 9000 --no-browser
+py src\webapp.py --library                 # open on the Organize-a-folder page
+
+py src\library.py                          # scan rips_root, show the plan, ask, move
+py src\library.py --dry-run                # show the plan, move nothing
+py src\library.py --root /Volumes/rips     # another folder (macOS: smb://host/share too)
+py src\library.py --only Shrek             # only folders whose name contains "Shrek"
+py src\library.py --match "IROBOT_US=I, Robot"     # fix an identification by title
+py src\library.py --match "IROBOT_US=tmdb:2048"    # ...or pin the exact TMDB id
+py src\library.py --include-low            # also move low-confidence matches
+py src\library.py --prune-empty            # remove source folders left empty
+py src\library.py --yes                    # no confirmation prompt
+py src\library.py --undo path\to\organize-....json   # put a run's files back
 ```
+
+On macOS / Linux run the same scripts with `python3 src/…`.
 
 ---
 
@@ -214,7 +336,7 @@ py src\webapp.py --port 9000 --no-browser
 | Key | Meaning |
 |-----|---------|
 | `tmdb_api_key` | Your TMDB v3 API key. |
-| `makemkvcon` | Path to `makemkvcon64.exe`. |
+| `makemkvcon` | Path to `makemkvcon64.exe` (macOS: `/Applications/MakeMKV.app/Contents/MacOS/makemkvcon`). Only needed to rip discs. |
 | `tv_root` / `movie_root` | Destination library roots (local or a NAS share). |
 | `work_dir` | Local scratch folder titles are ripped into before moving to the library. Needs free space ≈ the largest title. |
 | `min_length_minutes` | Titles shorter than this are treated as extras (default `15`). |
@@ -225,6 +347,10 @@ py src\webapp.py --port 9000 --no-browser
 | `ffmpeg` | Path to `ffmpeg.exe` (with libbluray) to enable thumbnails. Empty ⇒ thumbnails off. |
 | `thumb_mid_fraction` / `thumb_tail_seconds` / `thumb_width` | Thumbnail frame offset and size (defaults `0.40`, `120`, `240`). |
 | `discdb` | Look up discs in [TheDiscDb](https://thediscdb.com/) to auto-fill identity and episode mapping (default `true`). Set `false` to disable all lookups. |
+| `rips_root` | Library mode: the folder of already-ripped discs. A path, or on macOS an `smb://host/share` address (mounted under `/Volumes/` on demand). |
+| `ffprobe` | Library mode: path to `ffprobe`. Empty ⇒ looked up next to `ffmpeg`, then on the PATH. |
+| `library_ignore` | Library mode: top-level folder names to skip, e.g. `["Test", "Incoming"]`. |
+| `extras_min_seconds` | Library mode: files shorter than this are skipped as junk (default `60`). |
 | `discdb_endpoint` / `discdb_timeout` | TheDiscDb GraphQL URL and per-lookup timeout in seconds (defaults `https://thediscdb.com/graphql/`, `4`). Lookups are advisory — a timeout just falls back to the normal flow. |
 
 ---
@@ -248,6 +374,11 @@ py src\webapp.py --port 9000 --no-browser
   `taskkill /IM makemkvcon64.exe /F`) — it holds the drive open.
 - **Disk space & time** — a full Blu-ray title can be several GB and take a while
   to rip.
+- **macOS** — library mode is plain Python + ffprobe and behaves the same on
+  every OS. The disc-ripping path is ported (MakeMKV detection via `pgrep`, the
+  disc's mount point resolved from `/dev/rdiskN` for TheDiscDb hashing and
+  thumbnails) but has had much less real-disc testing than on Windows. To end a
+  hung `makemkvcon`: `pkill makemkvcon`.
 
 ---
 
@@ -259,10 +390,14 @@ py src\webapp.py --port 9000 --no-browser
 | `src/webapp.py` | Local web server + JSON API. |
 | `src/thumbs.py` | ffmpeg frame extraction + libmmbd/AACS setup. |
 | `src/discdb.py` | TheDiscDb lookup: ContentHash, GraphQL query + cache, title join. Also runnable standalone (`py src\discdb.py <drive>`) to test a disc. |
+| `src/library.py` | Library mode: scan a folder of ripped discs, group, identify, classify, move, undo. Also the CLI. |
 | `ui/index.html` | The drag-and-drop web UI (single file). |
+| `ui/library.html` | The Organize-a-folder page (single file). |
 | `install/setup.ps1` / `install/setup.cmd` | One-time Windows setup (winget installs + config). |
+| `install/setup.sh` / `install/setup.command` | One-time macOS setup (Homebrew installs), then runs `configure.py`. |
+| `install/configure.py` | Prompts for the key and folders, writes `config.json`, verifies. |
 | `config.example.json` | Template config with all keys and defaults (repo root). |
 
 The repo is organized into `src/` (Python engine + server), `ui/` (the single-file
-web front-end), and `install/` (the Windows setup scripts); `config.json` and
+web front-end), and `install/` (the Windows and macOS setup scripts); `config.json` and
 `config.example.json` live at the repo root.
