@@ -21,7 +21,10 @@ COPY src/ /app/src/
 COPY ui/ /app/ui/
 COPY LICENSE /app/LICENSE
 COPY docker/entrypoint.sh /usr/local/bin/diskrip-entrypoint
-RUN chmod 0755 /usr/local/bin/diskrip-entrypoint \
+# COPY keeps the checkout's modes, which may be owner-only (0600); the app runs
+# as uid 568, so make it readable by everyone
+RUN chmod -R a+rX,go-w /app \
+ && chmod 0755 /usr/local/bin/diskrip-entrypoint \
  && mkdir -p /config /rips /movies /tv \
  && chown 568:568 /config
 
