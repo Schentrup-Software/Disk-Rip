@@ -124,7 +124,8 @@ def parse_duration(text):
 
 
 def sanitize(name):
-    """Make a title safe for a Windows filename, matching TMM's conventions."""
+    """Make a title safe for a filename on any OS / SMB share (Windows rules are
+    the strictest, so we follow them), matching TMM's conventions."""
     if name is None:
         return ""
     # "Title: Subtitle" -> "Title - Subtitle"
@@ -175,8 +176,14 @@ class MakeMKV:
     def __init__(self, exe):
         self.exe = exe
         self.last_rip_error = ""   # why the most recent rip() failed, if it did
-        if not Path(exe).exists():
-            die(f"makemkvcon not found at: {exe}\nFix 'makemkvcon' in your config.")
+        if not exe or not Path(exe).is_file():
+            hint = ("On macOS it lives inside the app: "
+                    "/Applications/MakeMKV.app/Contents/MacOS/makemkvcon"
+                    if sys.platform == "darwin" else
+                    "On Windows it is usually C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe")
+            die(f"makemkvcon not found at: {exe or '(not set)'}\n"
+                f"Fix 'makemkvcon' in your config. {hint}\n"
+                "(MakeMKV is only needed to rip discs - the Library page works without it.)")
 
     # Abort a MakeMKV call if it produces no output at all for this long. A
     # healthy scan/rip emits status or progress lines every second or two; total
@@ -1019,7 +1026,7 @@ def show_movie_proposal(p):
     print(f"  Main title : t{mt.id:02d}  {hms(mt.duration)}  {mt.resolution or '?'}  "
           f"{mt.chapters}ch{delta}")
     print(f"  {dim('Folder')}     : {folder}")
-    print(f"  {dim('File')}       : {folder}\\{fname}")
+    print(f"  {dim('File')}       : {folder}{os.sep}{fname}")
 
 
 def show_tv_proposal(p):
@@ -1027,7 +1034,7 @@ def show_tv_proposal(p):
     print(bold(f"  TV  —  Season {p.season_number}, starting at episode {p.start_episode}"))
     print(bold("=" * 70))
     print(f"  Identified : {bold(p.title)} ({p.year})   imdb-{p.imdb or '?'}")
-    print(f"  {dim('Show folder')}: {p.show_folder()}\\Season {p.season_number}\\")
+    print(f"  {dim('Show folder')}: {p.show_folder()}{os.sep}Season {p.season_number}{os.sep}")
     if not p.episodes:
         print(yellow("  ! No TMDB episode data for this season "
                      "(runtimes/titles unavailable) - mapping by disc order only."))
@@ -1371,7 +1378,8 @@ def main():
         return
 
     drive_index = pick_drive(mk, args.drive)
-    # capture the optical device path (e.g. "E:") so TheDiscDb can hash the disc
+    # capture the optical device path ("E:" on Windows, "/dev/rdisk4" on macOS)
+    # so TheDiscDb can hash the disc
     for idx, _n, _l, _loaded, device in mk.list_drives():
         if idx == drive_index:
             disc_device = device
