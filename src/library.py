@@ -1043,3 +1043,174 @@ def build_plan(scan, cfg, overrides=None):
             else:
                 item["status"] = "move"
     return items
+
+
+# ---------------------------------------------------------------------------
+# Apply: move files, logging every move so it can be undone
+# ---------------------------------------------------------------------------
+def _copy_then_remove(src, dst, on_bytes=None):
+    """Cross-volume move with progress: copy to '<dst>.part', verify the size,
+    rename into place, then remove the source."""
+    part = dst.with_name(dst.name + ".part")
+    total = os.path.getsize(src)
+    done = 0
+    with open(src, "rb") as fi, open(part, "wb") as fo:
+        while True:
+            buf = fi.read(8 * 1024 * 1024)
+            if not buf:
+                break
+            fo.write(buf)
+            done += len(buf)
+            if on_bytes:
+                on_bytes(done, total)
+    if os.path.getsize(part) != total:
+        os.remove(part)
+        raise OSError("copy was incomplete - source left untouched")
+    shutil.copystat(src, part, follow_symlinks=True)
+    os.rename(part, dst)
+    os.remove(src)
+
+
+def move_file(src, dst, on_bytes=None):
+    """Move src to dst without ever overwriting. Same volume = instant rename;
+    different volume = copy, verify, then delete the source."""
+    src, dst = Path(src), Path(dst)
+    if dst.exists():
+        raise FileExistsError(f"already exists: {dst}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.rename(src, dst)
+        return "renamed"
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+    _copy_then_remove(src, dst, on_bytes)
+    return "copied"
+
+
+def _sidecars(src):
+    """Non-video files that belong to a video ('Movie.srt', 'Movie.en.srt')."""
+    src = Path(src)
+    out = []
+    try:
+        for p in src.parent.iterdir():
+            if p.is_file() and p != src and p.name.startswith(src.stem + ".") \
+                    and p.suffix.lower() not in VIDEO_EXT:
+                out.append(p)
+    except OSError:
+        pass
+    return out
+
+
+def _write_log(path, log):
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(json.dumps(log, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def prune_empty(folder):
+    """Remove `folder` if only empty sub-folders and Finder droppings
+    (.DS_Store, ._*) are left in it. Returns True if it was removed."""
+    folder = Path(folder)
+    junk = lambda n: n == ".DS_Store" or n.startswith("._") or n == "Thumbs.db"
+    for d, dirs, fs in os.walk(folder):
+        if any(not junk(f) for f in fs):
+            return False
+    for d, dirs, fs in os.walk(folder, topdown=False):
+        for f in fs:
+            os.remove(os.path.join(d, f))
+        os.rmdir(d)
+    return True
+
+
+def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
+    """Execute every item whose status is 'move'. Returns the log dict (also
+    written to work_dir/library-logs/). on_item(item) is called on each status
+    change so a UI can show progress; items gain 'state', 'pct', 'error'."""
+    todo = [i for i in items if i["status"] == "move"]
+    log_dir = Path(cfg["work_dir"]) / "library-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / time.strftime("organize-%Y%m%d-%H%M%S.json")
+    log = {"started": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "root": str(scan.root) if scan else "", "movie_root": str(cfg["movie_root"]),
+           "moves": [], "pruned": []}
+    _write_log(log_path, log)
+    log["path"] = str(log_path)
+
+    def tell(i):
+        if on_item:
+            on_item(i)
+
+    for i in todo:
+        i["state"], i["pct"] = "moving", 0
+        tell(i)
+
+        def on_bytes(done, total, _i=i):
+            pct = int(done * 100 / total) if total else 100
+            if pct != _i["pct"]:
+                _i["pct"] = pct
+                tell(_i)
+
+        try:
+            sidecars = _sidecars(i["src"])
+            how = move_file(i["src"], i["target"], on_bytes)
+            log["moves"].append({"src": i["src"], "dst": i["target"], "how": how})
+            tstem = Path(i["target"]).with_suffix("")
+            for sc in sidecars:
+                sdst = Path(str(tstem) + sc.name[len(Path(i["src"]).stem):])
+                try:
+                    move_file(sc, sdst)
+                    log["moves"].append({"src": str(sc), "dst": str(sdst), "how": "sidecar"})
+                except OSError:
+                    pass
+            i["state"], i["pct"] = "done", 100
+        except FileExistsError as e:
+            i["state"], i["error"] = "skipped", str(e)
+        except OSError as e:
+            i["state"], i["error"] = "failed", f"{e.strerror or e}"
+        _write_log(log_path, {k: v for k, v in log.items() if k != "path"})
+        tell(i)
+
+    if prune and scan is not None:
+        for folder in sorted({scan.files[i["file"]].folder for i in todo
+                              if i.get("state") == "done" and i["file"] in scan.files}):
+            try:
+                if prune_empty(scan.root / folder):
+                    log["pruned"].append(folder)
+            except OSError:
+                pass
+        _write_log(log_path, {k: v for k, v in log.items() if k != "path"})
+    return log
+
+
+def undo(log_path):
+    """Reverse a previous run from its log. Returns (restored, problems)."""
+    log = json.loads(Path(log_path).read_text(encoding="utf-8"))
+    restored, problems = 0, []
+    library_root = Path(log.get("movie_root") or "/").expanduser()
+    for mv in reversed(log.get("moves", [])):
+        src, dst = Path(mv["src"]), Path(mv["dst"])
+        if not dst.exists():
+            problems.append(f"missing, can't restore: {dst}")
+            continue
+        if src.exists():
+            problems.append(f"original path is occupied, left alone: {src}")
+            continue
+        try:
+            move_file(dst, src)
+            restored += 1
+        except OSError as e:
+            problems.append(f"{dst}: {e}")
+            continue
+        # tidy the now-empty library folders we created (rmdir only removes
+        # empty directories, so nothing can be lost)
+        d = dst.parent
+        for _ in range(2):
+            if d == library_root:        # never remove the library folder itself
+                break
+            try:
+                d.rmdir()
+            except OSError:
+                break
+            d = d.parent
+    return restored, problems
