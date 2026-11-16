@@ -38,7 +38,7 @@ class App:
         self.cfg = dr.load_config(config_path)
         self.min_len = int(self.cfg.get("min_length_minutes", 15)) * 60
         self.movie_min = int(self.cfg.get("movie_min_minutes", 70)) * 60
-        self.mk = dr.MakeMKV(self.cfg["makemkvcon"])
+        self._mk = None           # created on first use - see the mk property
         self.tmdb = dr.TMDB(self.cfg["tmdb_api_key"], self.cfg.get("language", "en"))
         self.disc = None
         self.tv = None            # dr.TvProposal (naming + buckets, reused across selects)
@@ -51,6 +51,14 @@ class App:
         self.thumbnailer = Thumbnailer(
             self.cfg.get("ffmpeg"), self.cfg["work_dir"],
             makemkvcon_path=self.cfg.get("makemkvcon"), opts=self.cfg)
+
+    @property
+    def mk(self):
+        """MakeMKV is only needed to scan/rip a disc, so it is created on first
+        use - the Library page works on a machine without MakeMKV."""
+        if self._mk is None:
+            self._mk = dr.MakeMKV(self.cfg.get("makemkvcon") or "")
+        return self._mk
 
     # --- title bucketing --------------------------------------------------
     def title_rows(self):
