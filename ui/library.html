@@ -94,6 +94,11 @@
   .mbody { border-top:1px solid var(--line); padding:12px 16px; background:rgba(0,0,0,.14);
     overflow-x:auto; }
   .note { font-size:12px; color:var(--warn); margin-top:6px; }
+  .libbox { margin-top:8px; padding:8px 10px; border:1px solid var(--line, #2a3038);
+            border-radius:8px; font-size:12px; }
+  .libbox .lop { padding:2px 0; }
+  .libbox .lop code { font-size:11px; }
+  .libbox label { display:inline-flex; gap:6px; align-items:center; margin-top:6px; }
 
   /* change-match panel */
   .cands { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
@@ -181,6 +186,7 @@
         <button class="ghost small" data-act="collapse-all">Collapse all</button>
       </div>
     </div>
+    <div id="libdupes"></div>
   </section>
 
   <div id="groups"></div>
@@ -202,6 +208,9 @@
     <div class="sum" id="sum"></div>
     <label class="row muted" style="gap:6px; font-size:12px" title="After a successful move, delete source folders that contain nothing but empty sub-folders and .DS_Store files.">
       <input type="checkbox" id="prune"> Remove emptied source folders
+    </label>
+    <label class="row muted" style="gap:6px; font-size:12px" title="Rename library folders and feature files that don't follow 'Title (Year) [imdb-tt…]' to that standard name. Plex may re-match a renamed folder.">
+      <input type="checkbox" id="rename-all" data-act="rename-all" checked> Rename library folders to the standard name
     </label>
     <button class="ghost hidden" id="cancel-btn" data-act="cancel-move">Cancel</button>
     <button id="move-btn" data-act="move">Move files</button>
@@ -304,19 +313,27 @@ function included(g){ return !!S.data.include[g.id]; }
 function needsAttention(g){
   return !g.match || g.confidence === 'low' || g.busy || g.looksTv || !included(g);
 }
+function libOf(g){ return (S.data.library || {})[g.id] || null; }
 function counts(g){
-  const c = {main:0, extra:0, skip:0, move:0, exists:0, bytes:0};
+  const c = {main:0, extra:0, skip:0, move:0, exists:0, dup:0, bytes:0, lib:0};
   g.files.forEach(f => {
     const p = planOf(f);
     c[p.role]++;
     if(p.status === 'move'){ c.move++; c.bytes += f.size; }
     if(p.status === 'exists') c.exists++;
+    if(p.status === 'duplicate') c.dup++;
   });
+  const L = libOf(g);
+  if(L && included(g)) c.lib = L.ops.length;
   return c;
+}
+function finalFolder(g){
+  const L = libOf(g);
+  return (L && L.final) || (g.match ? g.match.folder : '');
 }
 function relTarget(g, target){
   if(!target) return '';
-  const folder = g.match ? g.match.folder : '';
+  const folder = finalFolder(g);
   const k = folder ? Math.max(target.lastIndexOf(folder + '/'), target.lastIndexOf(folder + '\\')) : -1;
   return k >= 0 ? target.slice(k + folder.length + 1) : target;
 }
@@ -336,6 +353,11 @@ function render(){
   $('groups').innerHTML = list.length ? list.map(renderMovie).join('')
     : (d.groups.length ? '<div class="step muted">Nothing in this filter.</div>'
        : '<div class="step muted">No ripped-disc folders with video files were found here.</div>');
+  const ld = d.libraryDupes || [];
+  $('libdupes').innerHTML = ld.length ? `<div class="banner warn" style="margin-top:10px">
+      <b>${ld.length}</b> other movie${ld.length===1?' is':'s are'} in your library more than once:
+      ${ld.slice(0, 8).map(set => set.map(n => `<code>${esc(n)}</code>`).join(' + ')).join('; ')}${ld.length > 8 ? '; …' : ''}.
+      <div class="muted" style="margin-top:4px">They're merged the next time that movie turns up in a scan.</div></div>` : '';
   show('s-skipped', d.skipped.length > 0);
   $('skipped').innerHTML = d.skipped.map(s =>
     `<div style="padding:3px 0"><b>${esc(s.name)}</b> <span class="muted">— ${esc(s.reason)}</span></div>`).join('');
@@ -364,10 +386,12 @@ function renderMovie(g){
                                : '<div class="poster"></div>';
   const title = m ? `${esc(m.title)} <span class="yr">(${esc(m.year || '?')})</span>`
                   : `${esc(g.query)} <span class="yr">— not identified</span>`;
-  const dest = m ? `<div class="mdest"><span class="muted">→</span> <code>${esc(m.folder)}/</code></div>` : '';
+  const dest = m ? `<div class="mdest"><span class="muted">→</span> <code>${esc(finalFolder(g))}/</code></div>` : '';
   const parts = [`<b>${c.main}</b> main`, `<b>${c.extra}</b> extra${c.extra===1?'':'s'}`];
   if(c.skip) parts.push(`<b>${c.skip}</b> skipped`);
-  if(c.exists) parts.push(`<span style="color:var(--bad)">${c.exists} already in library</span>`);
+  if(c.dup) parts.push(`<span class="muted">${c.dup} already in library</span>`);
+  if(c.exists) parts.push(`<span style="color:var(--bad)">${c.exists} name clash</span>`);
+  if(c.lib) parts.push(`<b>${c.lib}</b> library change${c.lib===1?'':'s'}`);
   const notes = g.notes.map(n => `<div class="note">! ${esc(n)}</div>`).join('');
   const open = !!S.open[g.id], mopen = !!S.matchOpen[g.id];
   return `<div class="${cls}" data-gid="${g.id}">
@@ -382,6 +406,7 @@ function renderMovie(g){
         ${dest}
         <div class="mcount">${parts.join(' · ')}</div>
         ${notes}
+        ${renderLibrary(g)}
       </div>
       <div class="mactions">
         <button class="ghost small" data-act="toggle-match" data-gid="${g.id}">${m ? 'Change match' : 'Find match'}</button>
@@ -391,6 +416,24 @@ function renderMovie(g){
     ${mopen ? renderMatchPanel(g) : ''}
     ${open ? renderFiles(g) : ''}
   </div>`;
+}
+
+const OP_LABEL = {'rename-folder':'Rename folder', 'rename-file':'Rename', merge:'Merge in',
+                  quarantine:'Set aside (duplicate)', 'remove-folder':'Remove empty folder'};
+function renderLibrary(g){
+  const L = libOf(g);
+  if(!L || !L.existing.length) return '';
+  const many = L.existing.length > 1;
+  const head = many
+    ? `<b>In your library ${L.existing.length} times:</b> ${L.existing.map(n => `<code>${esc(n)}</code>`).join(', ')} — they'll be merged into <code>${esc(L.final)}</code>.`
+    : `<b>Already in your library</b> as <code>${esc(L.existing[0])}</code> — new files go into it${L.final !== L.existing[0] ? `, renamed <code>${esc(L.final)}</code>` : ''}.`;
+  const ops = L.ops.map(o => `<div class="lop">${esc(OP_LABEL[o.op] || o.op)}: <code>${esc(o.src)}</code>${
+      o.target ? ` <span class="muted">→</span> <code>${esc(o.target)}</code>` : ''}${
+      o.note ? ` <span class="muted">— ${esc(o.note)}</span>` : ''}</div>`).join('');
+  const quar = L.duplicates ? `<div class="muted" style="margin-top:4px">Duplicates are moved to <code>.diskrip-duplicates/</code> in your Movies folder (hidden from Plex and Jellyfin). Nothing is deleted — check them, then delete that folder yourself.</div>` : '';
+  const ren = L.renameAvailable ? `<label><input type="checkbox" data-act="rename" data-gid="${g.id}" ${L.rename ? 'checked' : ''}>
+      Rename to the standard name <span class="muted">(Plex may re-match this movie)</span></label>` : '';
+  return `<div class="libbox">${head}${ops ? `<div style="margin-top:6px">${ops}</div>` : ''}${quar}${ren}</div>`;
 }
 
 function renderMatchPanel(g){
@@ -440,8 +483,10 @@ function renderFiles(g){
     const nameIn = p.role === 'extra'
       ? `<input class="nm" data-act="name" data-fid="${f.id}" value="${esc(p.name)}" title="File name in the library">` : '';
     let tgt;
-    if(p.status === 'move') tgt = `<span class="muted">→</span> <b>${esc(relTarget(g, p.target))}</b>`;
-    else if(p.status === 'exists') tgt = `<span class="pill bad">already in library</span> ${esc(relTarget(g, p.target))}`;
+    if(p.status === 'move') tgt = `<span class="muted">→</span> <b>${esc(relTarget(g, p.target))}</b>`
+        + (p.note ? `<div class="fnote">${esc(p.note)}</div>` : '');
+    else if(p.status === 'duplicate') tgt = `<span class="pill dim">already in library</span> <span class="muted">${esc(p.dupOf || '')} — stays where it is</span>`;
+    else if(p.status === 'exists') tgt = `<span class="pill bad">name taken</span> ${esc(relTarget(g, p.target))}`;
     else if(p.status === 'inplace') tgt = '<span class="pill dim">already in place</span>';
     else if(p.status === 'excluded') tgt = '<span class="muted">movie not ticked</span>';
     else if(p.status === 'unmatched') tgt = '<span class="muted">needs a match first</span>';
@@ -477,17 +522,20 @@ function renderFiles(g){
 function renderBar(){
   const d = S.data;
   if(!d){ show('actionbar', false); return; }
-  let files = 0, bytes = 0, movies = 0, exists = 0;
+  let files = 0, bytes = 0, movies = 0, dups = 0, libops = 0;
   d.groups.forEach(g => { const c = counts(g); files += c.move; bytes += c.bytes;
-    exists += c.exists; if(c.move) movies++; });
+    dups += c.dup; libops += c.lib; if(c.move || c.lib) movies++; });
   show('actionbar', d.groups.length > 0 && !S.moving);
-  $('sum').innerHTML = files
+  $('rename-all').checked = d.rename !== false;
+  const lib = libops ? ` <span class="muted">· ${libops} library change${libops===1?'':'s'}</span>` : '';
+  $('sum').innerHTML = (files || libops)
     ? `<b>${files}</b> file${files===1?'':'s'} from <b>${movies}</b> movie${movies===1?'':'s'} ready to move <span class="muted">(${gb(bytes)})</span>`
-      + (exists ? ` <span class="muted">· ${exists} already in the library will be left alone</span>` : '')
+      + lib + (dups ? ` <span class="muted">· ${dups} already in the library will be left alone</span>` : '')
     : '<span class="muted">Nothing selected to move — tick a matched movie.</span>';
   const btn = $('move-btn');
-  btn.disabled = !files;
-  btn.textContent = S.armed ? `Yes — move ${files} file${files===1?'':'s'} now` : 'Move files';
+  btn.disabled = !(files || libops);
+  const what = files ? `move ${files} file${files===1?'':'s'}` : `make ${libops} library change${libops===1?'':'s'}`;
+  btn.textContent = S.armed ? `Yes — ${what} now` : (files ? 'Move files' : 'Apply library changes');
   btn.classList.toggle('danger', S.armed);
   show('cancel-btn', S.armed);
 }
@@ -559,7 +607,7 @@ function renderMove(st){
   const tail = p => String(p || '').split(/[\\/]/).slice(-2).join('/');
   $('move-list').innerHTML = st.items.map(i => `<div class="moverow">
       <div>${icon[i.state] || '·'}</div>
-      <div><div class="fname">${esc(tail(i.target))}</div>
+      <div><div class="fname">${i.op ? `<span class="pill dim">${esc(OP_LABEL[i.op] || i.op)}</span> ` : ''}${esc(tail(i.target || i.src))}</div>
         <div class="fsub">from ${esc(tail(i.src))}${i.error ? ` — <span style="color:var(--bad)">${esc(i.error)}</span>` : ''}</div></div>
       <div>${i.state === 'moving' && i.pct > 0 ? `<div class="bar"><div style="width:${i.pct}%"></div></div>` :
              `<span class="muted">${esc(i.state)}</span>`}</div>
@@ -609,7 +657,7 @@ document.addEventListener('click', e => {
   else if(a === 'toggle-match'){ S.matchOpen[gid] = !S.matchOpen[gid]; render(); }
   else if(a === 'search') search(gid);
   else if(a === 'choose') choose(gid, el.dataset.id);
-  else if(a === 'include'){ S.overrides.groups[gid] = {include: el.checked}; replan(); }
+  else if(a === 'include'){ S.overrides.groups[gid] = Object.assign({}, S.overrides.groups[gid], {include: el.checked}); replan(); }
   else if(a === 'bulk'){
     const role = el.dataset.role;
     groupById(gid).files.forEach(f => {
@@ -625,6 +673,12 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', e => {
   const el = e.target, a = el.dataset && el.dataset.act;
+  if(a === 'rename-all'){ S.overrides.rename = el.checked; replan(); return; }
+  if(a === 'rename'){
+    const gid = el.dataset.gid;
+    S.overrides.groups[gid] = Object.assign({}, S.overrides.groups[gid], {rename: el.checked});
+    replan(); return;
+  }
   if(a === 'role') setFile(el.dataset.fid, {role: el.value});
   else if(a === 'category') setFile(el.dataset.fid, {category: el.value});
   else if(a === 'name') setFile(el.dataset.fid, {name: el.value.trim()});
