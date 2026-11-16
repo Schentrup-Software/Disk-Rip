@@ -6,7 +6,7 @@ Every library root (rips_root, movie_root, tv_root) and the work_dir pass
 through validate_root() before anything is planned, moved or ripped. A root
 must be an absolute, existing folder (writable, when we are going to write to
 it), and it may not be a URL. A media root may also not sit inside the Disk-Rip
-folder or its work_dir.
+folder or its work_dir, and inside a container it must be a real mount.
 
 This exists because of a real accident: movie_root was set to
 "smb://nas/Movies/", which Path() quietly turns into the *relative* path
@@ -44,6 +44,12 @@ class RootError(Exception):
         super().__init__(f"{ROOT_KEYS.get(name, name)} {reason}")
 
 
+def in_container(environ=None):
+    """True when DISKRIP_IN_CONTAINER is set (the Docker image sets it)."""
+    v = (os.environ if environ is None else environ).get("DISKRIP_IN_CONTAINER", "")
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
 def looks_like_url(value):
     v = str(value).strip().lower()
     return "://" in v or v.startswith(URL_PREFIXES)
@@ -78,6 +84,73 @@ def _write_probe(folder):
     except OSError as e:
         return f"a file could be created but not deleted: {e.strerror or e}"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Container mount guard: inside Docker, a library root that isn't a bind mount
+# lives on the container's writable layer (on TrueNAS, the apps pool). Writing
+# media there would fill it and vanish with the container, so refuse.
+# ---------------------------------------------------------------------------
+def _unescape_mount(s):
+    # mountinfo escapes space, tab, newline and backslash as \ooo
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+
+
+def mount_points(mountinfo=None):
+    """Mount points listed in /proc/self/mountinfo (field 5), or None if it
+    can't be read. `mountinfo` may be passed in as text (for tests)."""
+    if mountinfo is None:
+        try:
+            mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        except OSError:
+            return None
+    out = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) >= 5:
+            out.append(_unescape_mount(fields[4]))
+    return out
+
+
+def mount_point_of(path, mountinfo=None):
+    """The mount point that holds `path` (longest matching prefix of its real
+    path), or None if the mount table can't be read."""
+    mps = mount_points(mountinfo)
+    if mps is None:
+        return None
+    real = os.path.realpath(str(path))
+    best = None
+    for mp in mps:
+        if mp == "/" or real == mp or real.startswith(mp.rstrip("/") + "/"):
+            if best is None or len(mp) > len(best):
+                best = mp
+    return best
+
+
+def _existing(path):
+    p = Path(os.path.realpath(str(path)))
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return p
+
+
+def check_mounted(name, path, *, mountinfo=None, stat=os.stat):
+    """Raise RootError unless `path` is on a mount other than the container's
+    root filesystem: its mount point must not be '/', and its device must
+    differ from the device of '/'."""
+    mp = mount_point_of(path, mountinfo)
+    if mp is None:
+        raise RootError(name, "could not be checked: /proc/self/mountinfo is unreadable.")
+    on_root = mp == "/"
+    if not on_root:
+        try:
+            on_root = stat(str(_existing(path))).st_dev == stat("/").st_dev
+        except OSError:
+            pass
+    if on_root:
+        raise RootError(name, f"({path}) is not a mounted volume, so files would land "
+                              "on the container's own disk. Add a storage mount "
+                              f"for {path} (Docker: -v /mnt/pool/dataset:{path}).")
 
 
 def _url_hint():
@@ -142,13 +215,14 @@ def resolve_config_roots(cfg, **kw):
 
 
 def validate_root(name, value, *, must_write=True, media=None, app_dir=None,
-                  work_dir=None):
+                  work_dir=None, container=None, mountinfo=None, stat=os.stat):
     """Return the root as an absolute Path, or raise RootError.
 
     Rejects: an empty value; a URL (anything containing '://' or starting with
     smb:, afp: or nfs:); a relative path; a path that doesn't exist or isn't a
     folder; a folder we can't write to (when must_write); and, for media roots,
-    a folder inside the Disk-Rip folder (app_dir) or inside work_dir."""
+    a folder inside the Disk-Rip folder (app_dir) or inside work_dir, or -
+    in a container (DISKRIP_IN_CONTAINER=1) - one that isn't a real mount."""
     value = "" if value is None else str(value).strip()
     if not value:
         raise RootError(name, "is not set.")
@@ -173,6 +247,8 @@ def validate_root(name, value, *, must_write=True, media=None, app_dir=None,
                                   "Point it at your library instead.")
         if work_dir and inside(p, work_dir):
             raise RootError(name, f"is inside work_dir ({work_dir}): {p}")
+        if in_container() if container is None else container:
+            check_mounted(name, p, mountinfo=mountinfo, stat=stat)
     if must_write:
         err = _write_probe(p)
         if err:
@@ -180,9 +256,11 @@ def validate_root(name, value, *, must_write=True, media=None, app_dir=None,
     return p
 
 
-def check_destination(path, *, app_dir=None):
+def check_destination(path, *, app_dir=None, container=None, mountinfo=None,
+                      stat=os.stat):
     """Last line of defence before a file is written: `path` must be an
-    absolute local path outside the Disk-Rip folder. Doesn't need to exist."""
+    absolute local path outside the Disk-Rip folder and, in a container, on a
+    mounted volume. Doesn't need to exist."""
     s = str(path)
     if looks_like_url(s) or not Path(s).is_absolute():
         raise RootError("destination", f"'{s}' is not an absolute local path; "
@@ -191,6 +269,8 @@ def check_destination(path, *, app_dir=None):
     if inside(s, app):
         raise RootError("destination", f"'{s}' is inside the Disk-Rip folder "
                                        f"({app}); refusing to write there.")
+    if in_container() if container is None else container:
+        check_mounted("destination", s, mountinfo=mountinfo, stat=stat)
 
 
 def overlap_warnings(roots):

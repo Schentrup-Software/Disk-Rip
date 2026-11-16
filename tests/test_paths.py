@@ -122,6 +122,91 @@ class DestinationTests(unittest.TestCase):
                     paths.check_destination(bad, app_dir=app)
 
 
+def _mountinfo(*mounts):
+    lines = ["22 1 0:21 / / rw,relatime - overlay overlay rw"]
+    for i, mp in enumerate(mounts):
+        mp = mp.replace(" ", "\\040")
+        lines.append(f"{30 + i} 22 0:{40 + i} /data {mp} rw,relatime - zfs pool/x rw")
+    return "\n".join(lines) + "\n"
+
+
+class FakeStat:
+    """stat() replacement: '/' is device 1, anything under `mounted` device 2."""
+
+    def __init__(self, *mounted):
+        self.mounted = [os.path.realpath(m) for m in mounted]
+
+    def __call__(self, p):
+        real = os.path.realpath(p)
+        dev = 2 if any(real == m or real.startswith(m + os.sep) for m in self.mounted) else 1
+
+        class R:
+            st_dev = dev
+        return R
+
+
+class MountGuardTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(os.path.realpath(self._tmp.name))
+        self.movies = self.tmp / "My Movies"
+        self.movies.mkdir()
+        self.app = self.tmp / "app"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_mount_point_of_longest_prefix(self):
+        mi = _mountinfo("/mnt", str(self.movies))
+        self.assertEqual(paths.mount_point_of(self.movies / "X (2001)", mi), str(self.movies))
+        self.assertEqual(paths.mount_point_of("/mnt/a", mi), "/mnt")
+        self.assertEqual(paths.mount_point_of("/mntx", mi), "/")
+        self.assertEqual(paths.mount_point_of("/etc", mi), "/")
+
+    def test_root_on_a_mount_is_accepted_in_container(self):
+        got = validate_root("movies", str(self.movies), app_dir=self.app, container=True,
+                            mountinfo=_mountinfo(str(self.movies)),
+                            stat=FakeStat(self.movies))
+        self.assertEqual(got, self.movies)
+
+    def test_root_on_container_disk_is_refused(self):
+        with self.assertRaises(RootError) as cm:
+            validate_root("movies", str(self.movies), app_dir=self.app, container=True,
+                          mountinfo=_mountinfo("/config"), stat=FakeStat())
+        self.assertIn("not a mounted volume", cm.exception.reason)
+
+    def test_same_device_as_root_is_refused(self):
+        # listed as a mount point but on the same device as "/" (e.g. a bind
+        # mount of a folder from the container's own disk)
+        with self.assertRaises(RootError):
+            validate_root("movies", str(self.movies), app_dir=self.app, container=True,
+                          mountinfo=_mountinfo(str(self.movies)), stat=FakeStat())
+
+    def test_guard_off_outside_container(self):
+        got = validate_root("movies", str(self.movies), app_dir=self.app, container=False,
+                            mountinfo=_mountinfo(), stat=FakeStat())
+        self.assertEqual(got, self.movies)
+
+    def test_work_dir_is_not_guarded(self):
+        validate_root("work", str(self.movies), app_dir=self.app, container=True,
+                      mountinfo=_mountinfo(), stat=FakeStat())
+
+    def test_destination_guard(self):
+        dest = self.movies / "New (2020)"
+        paths.check_destination(dest, app_dir=self.app, container=True,
+                                mountinfo=_mountinfo(str(self.movies)),
+                                stat=FakeStat(self.movies))
+        with self.assertRaises(RootError):
+            paths.check_destination(dest, app_dir=self.app, container=True,
+                                    mountinfo=_mountinfo(), stat=FakeStat())
+
+    def test_in_container_flag(self):
+        self.assertTrue(paths.in_container({"DISKRIP_IN_CONTAINER": "1"}))
+        self.assertTrue(paths.in_container({"DISKRIP_IN_CONTAINER": "True"}))
+        self.assertFalse(paths.in_container({"DISKRIP_IN_CONTAINER": "0"}))
+        self.assertFalse(paths.in_container({}))
+
+
 class ResolveSmbTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
