@@ -404,6 +404,12 @@ class App:
     def api_rip_status(self, _body):
         return self.ripjob or {"running": False, "items": []}
 
+    # --- library roots ------------------------------------------------------
+    def api_roots(self, _body):
+        """Live status of every configured root, for the red banner in the UI."""
+        status, warnings = paths.check_roots(self.cfg, errors=self.cfg.get("_unresolved"))
+        return {"roots": status, "warnings": warnings}
+
     # --- library mode: organize already-ripped folders ---------------------
     def api_library_config(self, _body):
         return {
@@ -590,6 +596,7 @@ ROUTES = {
 GET_ROUTES = {
     "/api/rip/status": "api_rip_status",
     "/api/thumbs/status": "api_thumbs_status",
+    "/api/roots": "api_roots",
     "/api/library/config": "api_library_config",
     "/api/library/status": "api_library_status",
     "/api/library/apply/status": "api_library_apply_status",
@@ -681,6 +688,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             result = getattr(self.app, handler_name)(body)
             self._send_json(result)
+        except paths.RootError as e:
+            # 409: the request is fine, but a configured folder isn't usable
+            self._send_json({"error": str(e), "root": e.name}, 409)
         except dr.DiskRipError as e:
             self._send_json({"error": str(e)}, 400)
         except Exception as e:
@@ -709,6 +719,11 @@ def main():
     print(f"  Rip a disc:        {url}/")
     print(f"  Organize a folder: {url}/library")
     print("Press Ctrl+C to stop.")
+    for entry in Handler.app.cfg.get("_roots", {}).values():
+        if entry["error"]:
+            print(dr.red(f"  ! {entry['key']}: {entry['error']}"))
+    for w in Handler.app.cfg.get("_root_warnings", []):
+        print(dr.yellow(f"  ! {w}"))
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(start)).start()
     try:

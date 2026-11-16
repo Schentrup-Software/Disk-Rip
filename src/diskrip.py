@@ -1336,6 +1336,7 @@ def load_config(path):
     # Record what is wrong with each root instead of failing here: the web UI
     # should still start and say so. Planning, moving and ripping re-validate
     # the root they need and refuse to run on a bad one.
+    cfg["_unresolved"] = unresolved
     cfg["_roots"], cfg["_root_warnings"] = paths.check_roots(cfg, errors=unresolved)
     return cfg
 

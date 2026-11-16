@@ -150,6 +150,7 @@
   <span class="sub">discs you've already ripped → named, sorted movie library</span>
 </header>
 <main>
+  <div id="roots"></div>
   <div id="err"></div>
 
   <section class="step" id="s-source">
@@ -220,15 +221,26 @@ async function post(path, body){
   const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(body || {})});
   const j = await r.json();
-  if(j && j.error) throw new Error(j.error);
+  if(j && j.error){ if(j.root) loadRoots(); throw new Error(j.error); }
   return j;
 }
 async function get(path){
   // status endpoints carry their own "error" field next to "running" - only a
   // bare {error} object is a failed request
   const j = await (await fetch(path)).json();
+  if(j && j.root) loadRoots();
   if(j && j.error && j.running === undefined) throw new Error(j.error);
   return j;
+}
+
+/* ---------- folder problems (movie_root, tv_root, rips_root, work_dir) ---------- */
+async function loadRoots(){
+  let j;
+  try{ j = await (await fetch('/api/roots')).json(); }catch(e){ return; }  // static demo: no backend
+  const bad = Object.values(j.roots || {}).filter(r => r.error);
+  document.getElementById('roots').innerHTML =
+    bad.map(r => `<div class="banner bad">⚠ <b>${esc(r.key)}</b> ${esc(r.error)}</div>`).join('') +
+    (j.warnings || []).map(w => `<div class="banner warn">${esc(w)}</div>`).join('');
 }
 function gb(bytes){
   const g = bytes / 1073741824;
@@ -629,6 +641,7 @@ document.addEventListener('keydown', e => {
   else if(el.dataset && (el.dataset.q || el.dataset.y)) search(el.dataset.q || el.dataset.y);
 });
 
+loadRoots();
 init();
 </script>
 </body>

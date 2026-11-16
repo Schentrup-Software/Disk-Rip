@@ -144,6 +144,7 @@
 </header>
 <main>
   <nav id="stepper" class="stepper"></nav>
+  <div id="roots"></div>
   <div id="err"></div>
 
   <!-- STEP 1: DRIVE -->
@@ -245,8 +246,18 @@ async function api(path, body){
   const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(body||{})});
   const j = await r.json();
-  if(j && j.error){ throw new Error(j.error); }
+  if(j && j.error){ if(j.root) loadRoots(); throw new Error(j.error); }
   return j;
+}
+
+/* ---------- folder problems (movie_root, tv_root, rips_root, work_dir) ---------- */
+async function loadRoots(){
+  let j;
+  try{ j = await (await fetch('/api/roots')).json(); }catch(e){ return; }  // static demo: no backend
+  const bad = Object.values(j.roots || {}).filter(r => r.error);
+  document.getElementById('roots').innerHTML =
+    bad.map(r => `<div class="banner bad">⚠ <b>${esc(r.key)}</b> ${esc(r.error)}</div>`).join('') +
+    (j.warnings || []).map(w => `<div class="banner warn">${esc(w)}</div>`).join('');
 }
 function show(id, on){ document.getElementById(id).classList.toggle('hidden', !on); }
 
@@ -701,6 +712,7 @@ async function pollStatus(){
         <div class="bar"><div style="width:${it.pct}%;background:${color}"></div></div>${err}</div>`;
     }).join('');
     if(job.error) showErr(job.error);
+    if(job.root) loadRoots();
     if(job.running){
       // one spinner up top; its text is the current phase (Analysing / Ripping)
       const active=(job.items||[]).find(i=>i.status==='ripping');
@@ -744,6 +756,7 @@ function resetWizard(){
 // the static demo (GitHub Pages) has no backend, so there is no Library page to link to
 if(location.pathname.includes('/demo')) document.getElementById('mode-tabs').classList.add('hidden');
 goStep(1);
+loadRoots();
 loadDrives();
 </script>
 </body>
