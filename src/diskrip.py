@@ -1328,13 +1328,15 @@ def load_config(path):
     cfg = json.loads(p.read_text(encoding="utf-8-sig"))
     if "PASTE_YOUR" in cfg.get("tmdb_api_key", ""):
         die("Set 'tmdb_api_key' in your config (free key from themoviedb.org).")
+    # On macOS, smb://host/share roots become their /Volumes/share folder.
+    unresolved = paths.resolve_config_roots(cfg)
     work = str(cfg.get("work_dir") or "")
     if work and not paths.looks_like_url(work) and Path(work).expanduser().is_absolute():
         Path(work).expanduser().mkdir(parents=True, exist_ok=True)
     # Record what is wrong with each root instead of failing here: the web UI
     # should still start and say so. Planning, moving and ripping re-validate
     # the root they need and refuse to run on a bad one.
-    cfg["_roots"], cfg["_root_warnings"] = paths.check_roots(cfg)
+    cfg["_roots"], cfg["_root_warnings"] = paths.check_roots(cfg, errors=unresolved)
     return cfg
 
 

@@ -17,6 +17,10 @@ Stdlib only.
 """
 
 import os
+import re
+import subprocess
+import sys
+import urllib.parse
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent   # the Disk-Rip folder
@@ -80,6 +84,61 @@ def _url_hint():
     return ("Mount the share and use its local folder instead (on macOS "
             "/Volumes/<share>, in Docker or TrueNAS the container path such "
             "as /movies).")
+
+
+SMB_RE = re.compile(r"^smb://(?:[^@/]+@)?([^/]+)/([^/]+)(/.*)?$", re.I)
+
+
+def _osascript_mount(url):
+    try:
+        subprocess.run(["osascript", "-e", f'mount volume "{url}"'],
+                       capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def resolve_spec(name, value, *, platform=None, volumes="/Volumes", mount=None):
+    """Turn an smb://host/share/sub address into its local folder on macOS
+    (/Volumes/share/sub), asking Finder to mount the share if needed;
+    credentials come from the Keychain, or macOS prompts once. Anything that
+    isn't an smb:// address is returned unchanged, for validate_root() to
+    judge. Raises RootError if the share can't be reached, or on any other OS."""
+    value = (value or "").strip()
+    m = SMB_RE.match(value)
+    if not m:
+        return value
+    if (platform or sys.platform) != "darwin":
+        raise RootError(name, f"is '{value}'. smb:// addresses are only mounted "
+                              f"automatically on macOS. {_url_hint()}")
+    share = urllib.parse.unquote(m.group(2))
+    sub = (m.group(3) or "").strip("/")
+    mount_dir = Path(volumes) / share
+    if not mount_dir.is_dir():
+        (mount or _osascript_mount)(f"smb://{m.group(1)}/{m.group(2)}")
+    if not mount_dir.is_dir():
+        raise RootError(name, f"could not be mounted ({value}). Connect to it in "
+                              "Finder (Go > Connect to Server); it should appear "
+                              f"at {mount_dir}.")
+    p = mount_dir / urllib.parse.unquote(sub) if sub else mount_dir
+    if not p.is_dir():
+        raise RootError(name, f"folder not found on the share: {p}")
+    return str(p)
+
+
+def resolve_config_roots(cfg, **kw):
+    """Replace every smb:// root in cfg (rips, movies, tv and work) with its
+    local folder. Returns {name: reason} for roots that couldn't be resolved;
+    those keep their original value."""
+    errors = {}
+    for name, key in ROOT_KEYS.items():
+        value = str(cfg.get(key) or "").strip()
+        if not value:
+            continue
+        try:
+            cfg[key] = resolve_spec(name, value, **kw)
+        except RootError as e:
+            errors[name] = e.reason
+    return errors
 
 
 def validate_root(name, value, *, must_write=True, media=None, app_dir=None,
@@ -154,19 +213,24 @@ def overlap_warnings(roots):
     return out
 
 
-def check_roots(cfg, *, app_dir=None):
+def check_roots(cfg, *, app_dir=None, errors=None):
     """Validate every root named in cfg without raising.
 
     Returns (status, warnings). status maps short name -> {"key", "path",
     "ok", "error"}; a root that isn't set has ok=False and error=None (it is
-    only an error once something needs it)."""
+    only an error once something needs it). `errors` holds reasons found
+    earlier (from resolve_config_roots) that take precedence."""
     status, good = {}, {}
+    errors = errors or {}
     work = cfg.get("work_dir") or None
     for name, key in ROOT_KEYS.items():
         value = str(cfg.get(key) or "").strip()
         entry = {"key": key, "path": value, "ok": False, "error": None}
         status[name] = entry
         if not value:
+            continue
+        if name in errors:
+            entry["error"] = errors[name]
             continue
         try:
             good[name] = validate_root(name, value, app_dir=app_dir,

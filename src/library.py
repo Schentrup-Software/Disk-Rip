@@ -109,37 +109,14 @@ def _fid(root, path):
 # Locating the source folder (accepts a path or, on macOS, an smb:// URL)
 # ---------------------------------------------------------------------------
 def resolve_root(spec, work_dir=None):
-    """Return the local Path for `spec`.
-
-    `spec` may be a normal path, or an SMB URL such as
-    smb://nas.example.com/rips/ . On macOS a share mounts at /Volumes/<share>;
-    if it isn't mounted yet we ask Finder to mount it (credentials come from the
-    Keychain, or macOS prompts once)."""
+    """Return the local Path of the rips folder `spec`: a normal path or, on
+    macOS, an SMB URL such as smb://nas.example.com/rips/ (see
+    paths.resolve_spec). Raises paths.RootError if it isn't usable."""
     spec = (spec or "").strip()
     if not spec:
-        dr.die("No source folder given. Set 'rips_root' in config.json or pass --root.")
-    m = re.match(r"^smb://(?:[^@/]+@)?([^/]+)/([^/]+)(/.*)?$", spec, re.I)
-    if not m:
-        return paths.validate_root("rips", spec, must_write=False,
-                                   work_dir=work_dir)
-    share, sub = m.group(2), (m.group(3) or "").strip("/")
-    share = re.sub(r"%20", " ", share)
-    if sys.platform != "darwin":
-        dr.die("smb:// addresses are only resolved automatically on macOS. "
-               "Mount the share and pass its local path instead.")
-    mount = Path("/Volumes") / share
-    if not mount.is_dir():
-        url = f"smb://{m.group(1)}/{m.group(2)}"
-        try:
-            subprocess.run(["osascript", "-e", f'mount volume "{url}"'],
-                           capture_output=True, text=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    if not mount.is_dir():
-        dr.die(f"Could not mount {spec}.\nConnect to it in Finder (Go > Connect "
-               f"to Server), then try again - it should appear at {mount}.")
-    p = mount / sub if sub else mount
-    return paths.validate_root("rips", str(p), must_write=False, work_dir=work_dir)
+        raise paths.RootError("rips", "is not set. Set it in config.json or pass --root.")
+    local = paths.resolve_spec("rips", spec)
+    return paths.validate_root("rips", local, must_write=False, work_dir=work_dir)
 
 
 # ---------------------------------------------------------------------------

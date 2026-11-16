@@ -122,6 +122,68 @@ class DestinationTests(unittest.TestCase):
                     paths.check_destination(bad, app_dir=app)
 
 
+class ResolveSmbTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.vol = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_plain_paths_pass_through(self):
+        self.assertEqual(paths.resolve_spec("movies", " /data/Movies "), "/data/Movies")
+
+    def test_smb_is_an_error_off_macos(self):
+        with self.assertRaises(RootError):
+            paths.resolve_spec("movies", "smb://nas/Movies/", platform="linux")
+
+    def test_mounted_share_resolves(self):
+        (self.vol / "Movies" / "Sub Dir").mkdir(parents=True)
+        got = paths.resolve_spec("movies", "smb://user@nas.example.com/Movies/Sub%20Dir/",
+                                 platform="darwin", volumes=self.vol,
+                                 mount=lambda url: self.fail("already mounted"))
+        self.assertEqual(got, str(self.vol / "Movies" / "Sub Dir"))
+
+    def test_unmounted_share_is_mounted(self):
+        calls = []
+
+        def mount(url):
+            calls.append(url)
+            (self.vol / "Shows").mkdir()
+
+        got = paths.resolve_spec("tv", "smb://nas/Shows", platform="darwin",
+                                 volumes=self.vol, mount=mount)
+        self.assertEqual(got, str(self.vol / "Shows"))
+        self.assertEqual(calls, ["smb://nas/Shows"])
+
+    def test_mount_failure(self):
+        with self.assertRaises(RootError) as cm:
+            paths.resolve_spec("tv", "smb://nas/Shows", platform="darwin",
+                               volumes=self.vol, mount=lambda url: None)
+        self.assertIn("could not be mounted", cm.exception.reason)
+
+    def test_resolve_config_roots_handles_all_four(self):
+        for share in ("rips", "Movies", "Shows", "scratch"):
+            (self.vol / share).mkdir()
+        cfg = {"rips_root": "smb://nas/rips", "movie_root": "smb://nas/Movies/",
+               "tv_root": "smb://nas/Shows/", "work_dir": "smb://nas/scratch",
+               "language": "en"}
+        errors = paths.resolve_config_roots(cfg, platform="darwin", volumes=self.vol)
+        self.assertEqual(errors, {})
+        self.assertEqual(cfg["movie_root"], str(self.vol / "Movies"))
+        self.assertEqual(cfg["tv_root"], str(self.vol / "Shows"))
+        self.assertEqual(cfg["rips_root"], str(self.vol / "rips"))
+        self.assertEqual(cfg["work_dir"], str(self.vol / "scratch"))
+
+    def test_resolve_config_roots_keeps_failures(self):
+        cfg = {"movie_root": "smb://nas/Movies/"}
+        errors = paths.resolve_config_roots(cfg, platform="linux")
+        self.assertIn("movies", errors)
+        self.assertEqual(cfg["movie_root"], "smb://nas/Movies/")
+        status, _ = paths.check_roots(cfg, errors=errors)
+        self.assertEqual(status["movies"]["error"], errors["movies"])
+
+
 class OverlapTests(unittest.TestCase):
     def test_overlap_is_a_warning(self):
         w = paths.overlap_warnings({"rips": "/data/rips", "movies": "/data/rips/Movies",
