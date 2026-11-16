@@ -1,0 +1,3 @@
+# macOS setup scripts must keep LF endings on every checkout (bash chokes on CRLF)
+*.sh text eol=lf
+*.command text eol=lf
