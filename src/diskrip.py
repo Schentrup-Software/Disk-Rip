@@ -180,9 +180,14 @@ class MakeMKV:
         self.exe = exe
         self.last_rip_error = ""   # why the most recent rip() failed, if it did
         if not exe or not Path(exe).is_file():
-            hint = ("On macOS it lives inside the app: "
+            hint = ("This container has no makemkvcon: the image was built without "
+                    "MakeMKV. Rebuild it and redeploy the app."
+                    if paths.in_container() else
+                    "On macOS it lives inside the app: "
                     "/Applications/MakeMKV.app/Contents/MacOS/makemkvcon"
                     if sys.platform == "darwin" else
+                    "On Linux it is /usr/bin/makemkvcon once MakeMKV is installed."
+                    if sys.platform.startswith("linux") else
                     "On Windows it is usually C:\\Program Files (x86)\\MakeMKV\\makemkvcon64.exe")
             die(f"makemkvcon not found at: {exe or '(not set)'}\n"
                 f"Fix 'makemkvcon' in your config. {hint}\n"
@@ -1401,6 +1406,27 @@ def die(msg):
     raise DiskRipError(msg)
 
 
+MAKEMKVCON_CANDIDATES = (
+    "makemkvcon", "makemkvcon64",
+    "/usr/bin/makemkvcon", "/usr/local/bin/makemkvcon",
+    "/Applications/MakeMKV.app/Contents/MacOS/makemkvcon",
+    r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe",
+    r"C:\Program Files\MakeMKV\makemkvcon64.exe",
+)
+
+
+def find_makemkvcon(configured=""):
+    """The configured makemkvcon if it exists, else the first one found on
+    PATH or in its usual install locations, else the configured value."""
+    if configured and Path(configured).is_file():
+        return configured
+    for c in MAKEMKVCON_CANDIDATES:
+        found = shutil.which(c) or (c if os.path.isabs(c) and Path(c).is_file() else None)
+        if found:
+            return found
+    return configured or ""
+
+
 def load_config(path):
     p = Path(path)
     if not p.exists():
@@ -1411,6 +1437,7 @@ def load_config(path):
     cfg = json.loads(p.read_text(encoding="utf-8-sig"))
     if "PASTE_YOUR" in cfg.get("tmdb_api_key", ""):
         die("Set 'tmdb_api_key' in your config (free key from themoviedb.org).")
+    cfg["makemkvcon"] = find_makemkvcon(cfg.get("makemkvcon") or "")
     # On macOS, smb://host/share roots become their /Volumes/share folder.
     unresolved = paths.resolve_config_roots(cfg)
     work = str(cfg.get("work_dir") or "")

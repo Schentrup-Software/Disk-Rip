@@ -100,6 +100,32 @@ class RipIntoPlaceTests(unittest.TestCase):
         self.assertFalse((self.movies / dr.RIP_TMP).exists())
 
 
+class FindMakemkvconTests(unittest.TestCase):
+    def test_found_on_path_when_config_is_blank(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / "makemkvcon"
+            exe.write_text("#!/bin/sh\n")
+            exe.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": d}):
+                self.assertEqual(dr.find_makemkvcon(""), str(exe))
+                self.assertEqual(dr.find_makemkvcon("/nope/makemkvcon"), str(exe))
+                self.assertEqual(dr.find_makemkvcon(str(exe)), str(exe))
+            with mock.patch.dict(os.environ, {"PATH": ""}), \
+                    mock.patch.object(dr, "MAKEMKVCON_CANDIDATES", ("makemkvcon",)):
+                self.assertEqual(dr.find_makemkvcon(""), "")
+
+    def test_load_config_fills_it_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / "makemkvcon"
+            exe.write_text("#!/bin/sh\n")
+            exe.chmod(0o755)
+            cfg = Path(d) / "config.json"
+            cfg.write_text('{"tmdb_api_key": "", "makemkvcon": "", "work_dir": "%s"}'
+                           % (Path(d) / "work"))
+            with mock.patch.dict(os.environ, {"PATH": d}):
+                self.assertEqual(dr.load_config(cfg)["makemkvcon"], str(exe))
+
+
 class SweepTests(unittest.TestCase):
     def test_sweeps_only_old_disk_rip_leftovers(self):
         with tempfile.TemporaryDirectory() as d:
