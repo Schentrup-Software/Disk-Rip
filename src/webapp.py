@@ -577,6 +577,47 @@ class App:
         self.lib = None
         return {"restored": restored, "problems": problems}
 
+    # --- library check: movies the library holds in more than one folder -----
+    def _library_index(self):
+        """The scan's library index if there is one, else a fresh one."""
+        idx = getattr(self.lib, "libindex", None) if self.lib is not None else None
+        if idx is None:
+            idx = getattr(self, "_libidx", None)
+            if idx is None:
+                idx = library.index_library(self.cfg, library.Prober(self.cfg))
+                if idx is None:
+                    dr.root_for(self.cfg, "movies")      # raises with the reason
+                self._libidx = idx
+        return idx.refresh()
+
+    def api_library_duplicates(self, _body):
+        idx = self._library_index()
+        return {"sets": idx.duplicates(), "folders": len(idx.folders)}
+
+    def _merge_items(self, body):
+        names = body.get("folders") or []
+        rename = bool(body.get("rename", True))
+        return library.plan_folder_merge(self._library_index(), names, self.cfg, rename)
+
+    def api_library_merge_plan(self, body):
+        _items, summary = self._merge_items(body)
+        return summary
+
+    def api_library_merge(self, body):
+        """Merge now: these are renames inside the library, so they run in the
+        request rather than as a background job."""
+        with self.lock:
+            if self.applyjob and self.applyjob.get("running"):
+                raise dr.DiskRipError("Files are being moved - wait for that to finish.")
+            items, summary = self._merge_items(body)
+            log = library.apply_plan(items, self.cfg)
+        self._library_index()                       # folders changed: re-list
+        done = [i for i in items if i.get("state") == "done"]
+        return {"log": log.get("path"), "final": summary.get("final"),
+                "done": len(done),
+                "failed": [{"src": i["src"], "error": i.get("error")} for i in items
+                           if i.get("state") in ("failed", "skipped")]}
+
     def library_thumb(self, file_id):
         if self.lib is None:
             return None
@@ -613,6 +654,8 @@ ROUTES = {
     "/api/library/select": "api_library_select",
     "/api/library/apply": "api_library_apply",
     "/api/library/undo": "api_library_undo",
+    "/api/library/merge/plan": "api_library_merge_plan",
+    "/api/library/merge": "api_library_merge",
 }
 
 GET_ROUTES = {
@@ -622,6 +665,7 @@ GET_ROUTES = {
     "/api/library/config": "api_library_config",
     "/api/library/status": "api_library_status",
     "/api/library/apply/status": "api_library_apply_status",
+    "/api/library/duplicates": "api_library_duplicates",
 }
 
 

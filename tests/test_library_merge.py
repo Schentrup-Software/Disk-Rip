@@ -247,6 +247,49 @@ class MergeTests(unittest.TestCase):
         self.assertEqual([i for i in items if i.get("kind")], [])
         self.assertEqual({i["status"] for i in items}, {"move"})
 
+    def test_merge_library_folders_without_a_scan(self):
+        a = self.movies / "Coco (2017)"
+        touch(a / "Coco (2017).mkv", 3000)
+        touch(a / "Featurettes" / "Miguel.mkv", 700)
+        b = self.movies / "Coco (2017) {tmdb-354912}"
+        touch(b / "Coco.mkv", 3100)
+        touch(b / "Coco.en.srt")
+        self.table.update({"Coco (2017).mkv": info(6300, HD), "Coco.mkv": info(6305, HD),
+                           "Miguel.mkv": info(240, HD)})
+        idx = LibraryIndex(self.movies, FakeProber(self.db, self.table)).refresh()
+        self.assertEqual(idx.duplicates(), [["Coco (2017)", "Coco (2017) {tmdb-354912}"]])
+        items, summary = library.plan_folder_merge(idx, idx.duplicates()[0], self.cfg)
+        keep = "Coco (2017) {tmdb-354912}"
+        self.assertEqual(summary["final"], keep)
+        ops = [(i["op"], os.path.relpath(i["src"], self.movies)) for i in items]
+        self.assertEqual(ops, [
+            ("rename-file", f"{keep}/Coco.mkv"),
+            ("rename-file", f"{keep}/Coco.en.srt"),
+            ("quarantine", "Coco (2017)/Coco (2017).mkv"),
+            ("merge", "Coco (2017)/Featurettes/Miguel.mkv"),
+            ("remove-folder", "Coco (2017)"),
+        ])
+        before = sorted(str(p.relative_to(self.movies)) for p in self.movies.rglob("*")
+                        if p.is_file())
+        log = library.apply_plan(items, self.cfg)
+        self.assertEqual([i["state"] for i in items], ["done"] * 5)
+        self.assertEqual(sorted(str(p.relative_to(self.movies / keep))
+                                for p in (self.movies / keep).rglob("*") if p.is_file()),
+                         [f"{keep} - 1080p.en.srt", f"{keep} - 1080p.mkv",
+                          "Featurettes/Miguel.mkv"])
+        self.assertEqual(LibraryIndex(self.movies, FakeProber(self.db, self.table))
+                         .refresh().duplicates(), [])
+        library.undo(log["path"])
+        after = sorted(str(p.relative_to(self.movies)) for p in self.movies.rglob("*")
+                       if p.is_file() and library.QUARANTINE not in p.parts)
+        self.assertEqual(after, before)
+
+    def test_merge_needs_two_folders(self):
+        touch(self.movies / "Coco (2017)" / "Coco.mkv")
+        idx = LibraryIndex(self.movies, FakeProber(self.db, self.table)).refresh()
+        with self.assertRaises(library.dr.DiskRipError):
+            library.plan_folder_merge(idx, ["Coco (2017)", "Nope"], self.cfg)
+
     def test_cli_prints_a_merge_plan(self):
         import contextlib
         import io

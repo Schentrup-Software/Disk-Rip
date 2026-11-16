@@ -1059,6 +1059,12 @@ def plan_library(g, idx, movie_root, rename, feature_min, stamp):
     delete once you're happy."""
     canon = g.folder_name()
     names = idx.matches(g.details) if (idx is not None and g.details) else []
+    return merge_plan(names, canon, idx, movie_root, rename, feature_min, stamp)
+
+
+def merge_plan(names, canon, idx, movie_root, rename, feature_min, stamp):
+    """plan_library for an explicit set of library folders `names` that hold
+    one movie whose standard folder name is `canon`."""
     summary = {"existing": names, "final": canon, "rename": rename,
                "renameAvailable": False, "ops": [], "duplicates": 0}
     if not names:
@@ -1167,6 +1173,33 @@ def plan_library(g, idx, movie_root, rename, feature_min, stamp):
             taken.add(o["target"].lower())
     summary["_taken"] = taken
     return final, ops, virtual, summary
+
+
+def plan_folder_merge(idx, names, cfg, rename=True):
+    """Plan merging library folders `names` that hold the same movie, without
+    a rips scan (the duplicates libindex reports). The kept name is a folder
+    that carries an IMDb/TMDB id, else 'Title (Year)' from the folder names.
+
+    Returns (items, summary); items run through apply_plan like any plan."""
+    movie_root = paths.validate_root("movies", cfg.get("movie_root"),
+                                     work_dir=cfg.get("work_dir"))
+    names = [n for n in dict.fromkeys(names) if n in idx.folders]
+    if len(names) < 2:
+        dr.die("Pick at least two library folders to merge.")
+    parsed = [idx.folders[n] for n in names]
+    tagged = [p for p in parsed if p["imdb"] or p["tmdb"]]
+    if tagged:
+        canon = tagged[0]["name"]
+    else:
+        base = parsed[0]
+        canon = dr.sanitize(f"{base['title']} ({base['year']})" if base["year"] else base["title"])
+    fmin = int(cfg.get("movie_min_minutes", 70)) * 60
+    final, ops, _virtual, summary = merge_plan(names, canon, idx, movie_root, rename, fmin,
+                                               time.strftime("%Y%m%d-%H%M%S"))
+    summary.pop("_taken", None)
+    items = [dict(o, kind="lib", group="library-merge", role="library", final=final,
+                  status="lib") for o in ops]
+    return items, summary
 
 
 def build_plan(scan, cfg, overrides=None, summary=None):

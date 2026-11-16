@@ -178,6 +178,18 @@
     </div>
   </section>
 
+  <section class="step" id="s-libcheck">
+    <h2>Library check</h2>
+    <div class="row">
+      <button class="ghost" data-act="check-library">Find movies that are in the library more than once</button>
+      <label class="row muted" style="gap:6px; font-size:12px">
+        <input type="checkbox" id="merge-rename" checked> Rename to the standard name while merging
+      </label>
+      <span class="muted" id="libcheck-status"></span>
+    </div>
+    <div id="libcheck"></div>
+  </section>
+
   <section class="step hidden" id="s-summary">
     <div class="row" style="justify-content:space-between">
       <div class="chips" id="chips"></div>
@@ -361,7 +373,8 @@ function render(){
   $('libdupes').innerHTML = ld.length ? `<div class="banner warn" style="margin-top:10px">
       <b>${ld.length}</b> other movie${ld.length===1?' is':'s are'} in your library more than once:
       ${ld.slice(0, 8).map(set => set.map(n => `<code>${esc(n)}</code>`).join(' + ')).join('; ')}${ld.length > 8 ? '; …' : ''}.
-      <div class="muted" style="margin-top:4px">They're merged the next time that movie turns up in a scan.</div></div>` : '';
+      <div class="row" style="margin-top:8px"><button class="small" data-act="check-library">Review and merge them</button>
+      <span class="muted">or they're merged the next time that movie turns up in a scan.</span></div></div>` : '';
   show('s-skipped', d.skipped.length > 0);
   $('skipped').innerHTML = d.skipped.map(s =>
     `<div style="padding:3px 0"><b>${esc(s.name)}</b> <span class="muted">— ${esc(s.reason)}</span></div>`).join('');
@@ -653,12 +666,71 @@ async function undoMove(log){
   } catch(e){ showErr(e.message); }
 }
 
+/* ---------- library check: merge folders that hold the same movie ---------- */
+const LC = { sets: [], plans: {}, done: {} };
+async function checkLibrary(){
+  $('libcheck-status').innerHTML = '<span class="spinner"></span> Reading the library…';
+  try {
+    const r = await get('/api/library/duplicates');
+    LC.sets = r.sets; LC.plans = {}; LC.done = {};
+    $('libcheck-status').textContent = r.sets.length
+      ? `${r.sets.length} movie${r.sets.length===1?' is':'s are'} in more than one folder (of ${r.folders} folders).`
+      : `No duplicates among ${r.folders} folders.`;
+    renderLibCheck();
+    $('s-libcheck').scrollIntoView({behavior:'smooth'});
+  } catch(e){ $('libcheck-status').textContent = ''; showErr(e.message); }
+}
+function renderLibCheck(){
+  $('libcheck').innerHTML = LC.sets.map((set, k) => {
+    const plan = LC.plans[k], done = LC.done[k];
+    let body = '';
+    if(done){
+      body = `<div class="banner ${done.failed.length ? 'warn' : 'good'}" style="margin-top:8px">Merged into <code>${esc(done.final)}</code> — ${done.done} change${done.done===1?'':'s'}.
+        ${done.failed.map(f => `<div class="note">${esc(f.src)}: ${esc(f.error)}</div>`).join('')}
+        <div class="row" style="margin-top:8px"><button class="ghost small" data-act="merge-undo" data-k="${k}">Undo this merge</button></div></div>`;
+    } else if(plan){
+      body = `<div style="margin-top:6px">Into <code>${esc(plan.final)}</code>:</div>` + plan.ops.map(o =>
+        `<div class="lop">${esc(OP_LABEL[o.op] || o.op)}: <code>${esc(o.src)}</code>${o.target ? ` <span class="muted">→</span> <code>${esc(o.target)}</code>` : ''}${o.note ? ` <span class="muted">— ${esc(o.note)}</span>` : ''}</div>`).join('')
+        + (plan.duplicates ? '<div class="muted" style="margin-top:4px">Duplicate copies go to <code>.diskrip-duplicates/</code> (hidden from Plex and Jellyfin); nothing is deleted.</div>' : '')
+        + `<div class="row" style="margin-top:8px"><button class="small" data-act="merge-run" data-k="${k}">Merge now</button></div>`;
+    }
+    return `<div class="libbox">${set.map(n => `<code>${esc(n)}</code>`).join(' + ')}
+      ${!plan && !done ? `<button class="ghost small" style="margin-left:8px" data-act="merge-plan" data-k="${k}">Preview merge</button>` : ''}${body}</div>`;
+  }).join('');
+}
+async function mergePlan(k){
+  try {
+    LC.plans[k] = await post('/api/library/merge/plan', {folders: LC.sets[k], rename: $('merge-rename').checked});
+    renderLibCheck();
+  } catch(e){ showErr(e.message); }
+}
+async function mergeRun(k){
+  try {
+    const r = await post('/api/library/merge', {folders: LC.sets[k], rename: $('merge-rename').checked});
+    LC.done[k] = r; renderLibCheck();
+    if(S.data) replan();            // the library changed under the current scan
+  } catch(e){ showErr(e.message); }
+}
+async function mergeUndo(k){
+  try {
+    const r = await post('/api/library/undo', {log: LC.done[k].log});
+    LC.done[k] = null; LC.plans[k] = null; renderLibCheck();
+    $('libcheck-status').textContent = `Undone: ${r.restored} change${r.restored===1?'':'s'} reversed.`
+      + (r.problems.length ? ' ' + r.problems.join('; ') : '');
+    if(S.data) replan();
+  } catch(e){ showErr(e.message); }
+}
+
 /* ---------- events (delegated) ---------- */
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
   if(!el || el.tagName === 'SELECT' || (el.tagName === 'INPUT' && el.type !== 'checkbox')) return;
   const a = el.dataset.act, gid = el.dataset.gid;
   if(a === 'scan') scan();
+  else if(a === 'check-library') checkLibrary();
+  else if(a === 'merge-plan') mergePlan(+el.dataset.k);
+  else if(a === 'merge-run') mergeRun(+el.dataset.k);
+  else if(a === 'merge-undo') mergeUndo(+el.dataset.k);
   else if(a === 'filter'){ S.filter = el.dataset.filter; render(); }
   else if(a === 'expand-all'){ S.data.groups.forEach(g => S.open[g.id] = true); render(); }
   else if(a === 'collapse-all'){ S.open = {}; S.matchOpen = {}; render(); }
