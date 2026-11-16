@@ -2,9 +2,9 @@
 # Container entrypoint.
 #
 # 1. Started as root (the image default), it drops to PUID:PGID (default
-#    568:568) before running anything else, adding the group that owns each
-#    optical drive passed in (/dev/srN, /dev/sgN; usually cdrom, 24) so MakeMKV
-#    can use it. It never adds group 0 (root) or 6 (disk, which can read every
+#    568:568) before running anything else, with PGID, the group that owns
+#    each optical drive passed in (/dev/srN, /dev/sgN; usually cdrom, 24) and
+#    any in PGROUPS (comma-separated) as supplementary groups. It never adds group 0 (root) or 6 (disk, which can read every
 #    hard drive). Started as another user (docker run --user), it skips this.
 # 2. Makes sure /config/config.json exists, with the container's folder layout
 #    (/rips, /movies, /tv) on first start. DISKRIP_TMDB_API_KEY, when set, is
@@ -17,7 +17,11 @@ DEV_DIR="${DISKRIP_DEV_DIR:-/dev}"     # overridable for tests only
 if [ "$(id -u)" = "0" ]; then
   PUID="${PUID:-568}"
   PGID="${PGID:-568}"
-  groups=""
+  # PGID is listed as a supplementary group too, as a normal login would have
+  # it: ZFS NFSv4 ACLs on TrueNAS only match named groups against the
+  # supplementary list, so without this a dataset shared with PGID's group
+  # is "Permission denied" even though it is the primary group.
+  groups="$PGID"
   for dev in "$DEV_DIR"/sr[0-9]* "$DEV_DIR"/sg[0-9]*; do
     [ -e "$dev" ] || continue
     g="$(stat -c %g "$dev")"
@@ -28,20 +32,17 @@ if [ "$(id -u)" = "0" ]; then
     esac
     case ",$groups," in *",$g,"*) ;; *) groups="${groups:+$groups,}$g" ;; esac
   done
-  if [ -n "${PGROUPS:-}" ]; then
-    groups="${groups:+$groups,}$PGROUPS"
-  fi
+  for g in $(echo "${PGROUPS:-}" | tr ',' ' '); do
+    case ",$groups," in *",$g,"*) ;; *) groups="$groups,$g" ;; esac
+  done
   # a brand-new, empty config folder created by root: hand it to the user
   CFG_DIR="$(dirname "${DISKRIP_CONFIG_FILE:-/config/config.json}")"
   mkdir -p "$CFG_DIR"
   if [ "$(stat -c %u "$CFG_DIR")" = "0" ] && [ -z "$(ls -A "$CFG_DIR")" ]; then
     chown "$PUID:$PGID" "$CFG_DIR"
   fi
-  echo "Running as uid $PUID, gid $PGID${groups:+, extra groups $groups}"
-  if [ -n "$groups" ]; then
-    exec setpriv --reuid="$PUID" --regid="$PGID" --groups="$groups" --inh-caps=-all -- "$0" "$@"
-  fi
-  exec setpriv --reuid="$PUID" --regid="$PGID" --clear-groups --inh-caps=-all -- "$0" "$@"
+  echo "Running as uid $PUID, gid $PGID, groups $groups"
+  exec setpriv --reuid="$PUID" --regid="$PGID" --groups="$groups" --inh-caps=-all -- "$0" "$@"
 fi
 
 CFG="${DISKRIP_CONFIG_FILE:-/config/config.json}"
