@@ -700,22 +700,28 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     import argparse
+    env = os.environ
     ap = argparse.ArgumentParser(description="Local web UI for Disk-Rip.")
-    ap.add_argument("--config", default=str(ROOT / "config.json"))
-    ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--config", default=env.get("DISKRIP_CONFIG_FILE") or str(ROOT / "config.json"))
+    ap.add_argument("--host", default=env.get("DISKRIP_HOST") or HOST,
+                    help="Address to listen on (default 127.0.0.1; 0.0.0.0 in a container).")
+    ap.add_argument("--port", type=int, default=int(env.get("DISKRIP_PORT") or PORT))
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--library", action="store_true",
                     help="Open on the Library page (organize already-ripped folders).")
     args = ap.parse_args()
+    if paths.in_container():
+        args.no_browser = True        # nobody to open a browser for
 
     Handler.app = App(args.config)
-    server = ThreadingHTTPServer((HOST, args.port), Handler)
-    url = f"http://{HOST}:{args.port}"
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    shown = "localhost" if args.host in ("0.0.0.0", "::") else args.host
+    url = f"http://{shown}:{args.port}"
     # No MakeMKV on this machine -> there is nothing to rip with, so land on
     # the Library page instead of an empty drive list.
     has_makemkv = os.path.isfile(Handler.app.cfg.get("makemkvcon") or "")
     start = url + "/library" if (args.library or not has_makemkv) else url
-    print(f"Disk-Rip web UI running at {url}")
+    print(f"Disk-Rip web UI listening on {args.host}:{args.port}  ({url})")
     print(f"  Rip a disc:        {url}/")
     print(f"  Organize a folder: {url}/library")
     print("Press Ctrl+C to stop.")
