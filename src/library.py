@@ -1273,9 +1273,9 @@ def build_plan(scan, cfg, overrides=None, summary=None):
 # ---------------------------------------------------------------------------
 # Apply: move files, logging every move so it can be undone
 # ---------------------------------------------------------------------------
-def _copy_then_remove(src, dst, on_bytes=None):
-    """Cross-volume move with progress: copy to '<dst>.part', verify the size,
-    rename into place, then remove the source.
+def _copy_then_remove(src, dst, on_bytes=None, keep_source=False):
+    """Copy with progress to '<dst>.part', verify the size, rename into place,
+    then remove the source (unless keep_source).
 
     Any failure (a full disk, a dropped share, Ctrl+C) removes the .part file
     and leaves the source untouched - a half-written copy must never be left
@@ -1308,17 +1308,22 @@ def _copy_then_remove(src, dst, on_bytes=None):
         except OSError:
             pass
         raise
-    os.remove(src)
+    if not keep_source:
+        os.remove(src)
 
 
-def move_file(src, dst, on_bytes=None):
+def move_file(src, dst, on_bytes=None, keep_source=False):
     """Move src to dst without ever overwriting. Same volume = instant rename;
-    different volume = copy, verify, then delete the source."""
+    different volume = copy, verify, then delete the source. With
+    keep_source the file is always copied and the original stays."""
     src, dst = Path(src), Path(dst)
     paths.check_destination(dst.parent)
     if dst.exists():
         raise FileExistsError(f"already exists: {dst}")
     dst.parent.mkdir(parents=True, exist_ok=True)
+    if keep_source:
+        _copy_then_remove(src, dst, on_bytes, keep_source=True)
+        return "kept"
     try:
         os.rename(src, dst)
         return "renamed"
@@ -1360,7 +1365,7 @@ def free_bytes(path):
 
 
 def check_space(moves):
-    """moves: iterable of (src, dst, size). Raise DiskRipError, before anything
+    """moves: iterable of (src, dst, size[, always]). Raise DiskRipError, before anything
     is moved, if a destination filesystem hasn't room for every copy it will
     receive plus headroom (1 GiB or 2%, whichever is more). Renames within one
     filesystem need no space and are not counted.
@@ -1369,10 +1374,10 @@ def check_space(moves):
     files off a snapshotted dataset frees nothing - only real free space
     counts."""
     need = {}
-    for src, dst, size in moves:
+    for src, dst, size, *always in moves:
         dst_dir = Path(dst).parent
         try:
-            if not needs_copy(src, dst_dir):
+            if not (always and always[0]) and not needs_copy(src, dst_dir):
                 continue
             dev = os.stat(_existing(dst_dir)).st_dev
         except OSError:
@@ -1426,21 +1431,32 @@ def prune_empty(folder):
     return True
 
 
-def _planned_moves(todo):
+def _planned_moves(todo, copy=False):
     out = []
     for i in todo:
         if not i.get("target") or os.path.isdir(i["src"]):
             continue                      # folder renames and removals
+        keep = copy and i.get("kind") != "lib"   # copies always need room
         try:
-            out.append((i["src"], i["target"], os.path.getsize(i["src"])))
+            out.append((i["src"], i["target"], os.path.getsize(i["src"]), keep))
         except OSError:
             continue
         for sc in _sidecars(i["src"]):
             try:
-                out.append((str(sc), i["target"], sc.stat().st_size))
+                out.append((str(sc), i["target"], sc.stat().st_size, keep))
             except OSError:
                 pass
     return out
+
+
+def transfer_mode(cfg, requested=None):
+    """'copy' keeps the originals in the rips folder; 'move' (the default)
+    removes each one after its copy is verified."""
+    mode = (requested or os.environ.get("DISKRIP_TRANSFER_MODE")
+            or cfg.get("transfer_mode") or "move").strip().lower()
+    if mode not in ("copy", "move"):
+        dr.die(f"transfer mode must be 'copy' or 'move', not '{mode}'")
+    return mode
 
 
 def _prepare_quarantine(movie_root):
@@ -1476,26 +1492,31 @@ def _apply_lib_op(i, log, movie_root):
     i["state"], i["pct"] = "done", 100
 
 
-def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
+def apply_plan(items, cfg, scan=None, prune=False, on_item=None, mode=None):
     """Execute every item whose status is 'move' or 'lib' (library changes run
     before their movie's files, in plan order). Returns the log dict (also
     written to work_dir/library-logs/). on_item(item) is called on each status
     change so a UI can show progress; items gain 'state', 'pct', 'error'.
 
     If a movie's library folder can't be renamed, the rest of that movie is
-    skipped: moving its files anyway would create a second folder again."""
+    skipped: moving its files anyway would create a second folder again.
+
+    mode 'copy' copies files from the rips folder and keeps the originals;
+    library changes are always moves (they reorganize the library itself)."""
+    copy = transfer_mode(cfg, mode) == "copy"
     todo = [i for i in items if i["status"] in ("move", "lib")]
     # check again right before writing: a share can drop between plan and apply
     paths.validate_root("movies", cfg.get("movie_root"), work_dir=cfg.get("work_dir"))
     if scan is not None:              # sources are removed after each move
-        paths.validate_root("rips", str(scan.root), work_dir=cfg.get("work_dir"))
-    check_space(_planned_moves(todo))
+        paths.validate_root("rips", str(scan.root), must_write=not copy,
+                            work_dir=cfg.get("work_dir"))
+    check_space(_planned_moves(todo, copy))
     log_dir = Path(cfg["work_dir"]) / "library-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / time.strftime("organize-%Y%m%d-%H%M%S.json")
     log = {"started": time.strftime("%Y-%m-%d %H:%M:%S"),
            "root": str(scan.root) if scan else "", "movie_root": str(cfg["movie_root"]),
-           "moves": [], "pruned": []}
+           "mode": "copy" if copy else "move", "moves": [], "pruned": []}
     _write_log(log_path, log)
     log["path"] = str(log_path)
 
@@ -1535,14 +1556,15 @@ def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
 
         try:
             sidecars = _sidecars(i["src"])
-            how = move_file(i["src"], i["target"], on_bytes)
+            how = move_file(i["src"], i["target"], on_bytes, keep_source=copy)
             log["moves"].append({"src": i["src"], "dst": i["target"], "how": how})
             tstem = Path(i["target"]).with_suffix("")
             for sc in sidecars:
                 sdst = Path(str(tstem) + sc.name[len(Path(i["src"]).stem):])
                 try:
-                    move_file(sc, sdst)
-                    log["moves"].append({"src": str(sc), "dst": str(sdst), "how": "sidecar"})
+                    h = move_file(sc, sdst, keep_source=copy)
+                    log["moves"].append({"src": str(sc), "dst": str(sdst),
+                                         "how": "kept" if h == "kept" else "sidecar"})
                 except OSError:
                     pass
             i["state"], i["pct"] = "done", 100
@@ -1567,7 +1589,7 @@ def apply_plan(items, cfg, scan=None, prune=False, on_item=None):
                 except Exception:
                     pass
 
-    if prune and scan is not None:
+    if prune and scan is not None and not copy:
         for folder in sorted({scan.files[i["file"]].folder for i in todo
                               if i.get("state") == "done" and i.get("file") in scan.files}):
             try:
@@ -1596,15 +1618,28 @@ def undo(log_path):
         if not dst.exists():
             problems.append(f"missing, can't restore: {dst}")
             continue
-        if src.exists():
+        if mv.get("how") == "kept" and src.is_file():
+            # a copy: the original never left, so undoing it is removing the
+            # copy - but only if it really is the same file
+            if src.stat().st_size != dst.stat().st_size:
+                problems.append(f"the copy differs from the original, left alone: {dst}")
+                continue
+            try:
+                dst.unlink()
+                restored += 1
+            except OSError as e:
+                problems.append(f"{dst}: {e}")
+                continue
+        elif src.exists():
             problems.append(f"original path is occupied, left alone: {src}")
             continue
-        try:
-            move_file(dst, src)
-            restored += 1
-        except OSError as e:
-            problems.append(f"{dst}: {e}")
-            continue
+        else:
+            try:
+                move_file(dst, src)
+                restored += 1
+            except OSError as e:
+                problems.append(f"{dst}: {e}")
+                continue
         # tidy the now-empty library folders we created (rmdir only removes
         # empty directories, so nothing can be lost)
         d = dst.parent
@@ -1717,6 +1752,9 @@ def main():
     ap.add_argument("--yes", action="store_true", help="Move without asking.")
     ap.add_argument("--prune-empty", action="store_true",
                     help="After moving, delete source folders that are left empty.")
+    ap.add_argument("--copy", action="store_true",
+                    help="Copy files and keep the originals in the rips folder "
+                         "(default: move; or set transfer_mode in config.json).")
     ap.add_argument("--no-rename", action="store_true",
                     help="Don't rename existing library folders/files to the standard name.")
     ap.add_argument("--hide-skips", action="store_true",
@@ -1802,7 +1840,8 @@ def main():
         elif i.get("state") in ("failed", "skipped"):
             print(f"\r  {dr.red('✗')} {Path(i['src']).name}: {i.get('error')}")
 
-    log = apply_plan(items, cfg, scan, prune=args.prune_empty, on_item=on_item)
+    log = apply_plan(items, cfg, scan, prune=args.prune_empty, on_item=on_item,
+                     mode="copy" if args.copy else None)
     print(dr.green(f"\nDone. {len(log['moves'])} file(s) moved."))
     print(dr.dim(f"Undo with:  python3 src/library.py --undo \"{log['path']}\""))
 

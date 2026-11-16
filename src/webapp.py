@@ -418,7 +418,14 @@ class App:
             "categories": library.CATEGORIES,
             "thumbs": self.libthumbs.available(),
             "makemkv": os.path.isfile(self.cfg.get("makemkvcon") or ""),
+            "transferMode": self._transfer_mode(),
         }
+
+    def _transfer_mode(self):
+        try:
+            return library.transfer_mode(self.cfg)
+        except dr.DiskRipError:
+            return "move"
 
     def _need_lib(self):
         if self.lib is None:
@@ -522,10 +529,11 @@ class App:
             job = self.applyjob = {"running": True, "items": todo, "error": None,
                                    "log": None, "pruned": []}
         prune = bool(body.get("prune"))
+        mode = body.get("mode") if body.get("mode") in ("copy", "move") else None
 
         def worker():
             try:
-                log = library.apply_plan(items, self.cfg, lib, prune=prune)
+                log = library.apply_plan(items, self.cfg, lib, prune=prune, mode=mode)
                 job["log"], job["pruned"] = log.get("path"), log.get("pruned", [])
             except (paths.RootError, dr.DiskRipError) as e:
                 job["error"] = str(e)

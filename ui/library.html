@@ -206,6 +206,9 @@
 <div class="actionbar hidden" id="actionbar">
   <div class="inner">
     <div class="sum" id="sum"></div>
+    <label class="row muted" style="gap:6px; font-size:12px" title="Copy each file into the library and leave the original in the rips folder. Uses space on both, but nothing in rips is ever removed.">
+      <input type="checkbox" id="copy-mode" data-act="copy-mode"> Keep originals in rips (copy)
+    </label>
     <label class="row muted" style="gap:6px; font-size:12px" title="After a successful move, delete source folders that contain nothing but empty sub-folders and .DS_Store files.">
       <input type="checkbox" id="prune"> Remove emptied source folders
     </label>
@@ -261,6 +264,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function init(){
   try {
     S.cfg = await get('/api/library/config');
+    $('copy-mode').checked = S.cfg.transferMode === 'copy';
     $('root').value = S.cfg.root || '';
     $('dest').textContent = S.cfg.movieRoot || '(movie_root is not set in config.json)';
     if(!S.cfg.makemkv) $('tab-rip').title = 'MakeMKV is not installed - it is only needed to rip discs';
@@ -534,8 +538,11 @@ function renderBar(){
     : '<span class="muted">Nothing selected to move — tick a matched movie.</span>';
   const btn = $('move-btn');
   btn.disabled = !(files || libops);
-  const what = files ? `move ${files} file${files===1?'':'s'}` : `make ${libops} library change${libops===1?'':'s'}`;
-  btn.textContent = S.armed ? `Yes — ${what} now` : (files ? 'Move files' : 'Apply library changes');
+  const copy = $('copy-mode').checked;
+  $('prune').disabled = copy;
+  const verb = copy ? 'copy' : 'move';
+  const what = files ? `${verb} ${files} file${files===1?'':'s'}` : `make ${libops} library change${libops===1?'':'s'}`;
+  btn.textContent = S.armed ? `Yes — ${what} now` : (files ? (copy ? 'Copy files' : 'Move files') : 'Apply library changes');
   btn.classList.toggle('danger', S.armed);
   show('cancel-btn', S.armed);
 }
@@ -585,7 +592,9 @@ async function choose(gid, id){
 async function startMove(){
   showErr('');
   try {
-    await post('/api/library/apply', {overrides:S.overrides, prune: $('prune').checked});
+    const copy = $('copy-mode').checked;
+    await post('/api/library/apply', {overrides:S.overrides, mode: copy ? 'copy' : 'move',
+                                      prune: !copy && $('prune').checked});
   } catch(e){ S.armed = false; renderBar(); showErr(e.message); return; }
   S.moving = true; S.armed = false;
   show('actionbar', false); show('s-summary', false); show('s-skipped', false);
@@ -674,6 +683,7 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   const el = e.target, a = el.dataset && el.dataset.act;
   if(a === 'rename-all'){ S.overrides.rename = el.checked; replan(); return; }
+  if(a === 'copy-mode'){ S.armed = false; renderBar(); return; }
   if(a === 'rename'){
     const gid = el.dataset.gid;
     S.overrides.groups[gid] = Object.assign({}, S.overrides.groups[gid], {rename: el.checked});
