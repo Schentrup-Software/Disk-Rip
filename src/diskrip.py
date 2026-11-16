@@ -49,6 +49,7 @@ if os.name == "nt":
 AP_NAME = 2
 AP_CHAPTER_COUNT = 8
 AP_DURATION = 9
+AP_DISK_SIZE_BYTES = 11
 AP_SOURCE_FILENAME = 16
 AP_VIDEO_SIZE = 19
 AP_SEGMENTS_MAP = 26
@@ -70,6 +71,7 @@ class Title:
         self.output_name = ""        # name MakeMKV will write, e.g. LABEL_t00.mkv
         self.resolution = ""         # e.g. 1920x1080
         self.segmap = ""             # segment map, e.g. "1,2,3" - fingerprints content
+        self.size_bytes = 0          # size of the ripped file, as MakeMKV estimates it
         # Assignment decided during confirmation:
         self.assign = None           # dict describing what to do, or None = skip
 
@@ -346,6 +348,8 @@ class MakeMKV:
                     t.segmap = val
                 elif aid == AP_OUTPUT_FILENAME:
                     t.output_name = val
+                elif aid == AP_DISK_SIZE_BYTES:
+                    t.size_bytes = int(val) if val.isdigit() else 0
             elif ln.startswith("SINFO:"):
                 f = self._fields(ln[6:])
                 tid, aid, val = int(f[0]), int(f[2]), f[4] if len(f) > 4 else ""
@@ -1260,6 +1264,85 @@ def _x(s):
 # ---------------------------------------------------------------------------
 # Rip + file execution
 # ---------------------------------------------------------------------------
+RIP_TMP = ".diskrip-tmp"           # hidden: Plex and Jellyfin skip it
+RIP_HEADROOM = 2 << 30              # leave 2 GiB free after a rip
+_RIP_JOB_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}-t\d+$")
+
+
+def _rip_tmp_root(root):
+    tmp = Path(root) / RIP_TMP
+    tmp.mkdir(exist_ok=True)
+    for name, text in ((".plexignore", "*\n"), (".ignore", "")):
+        f = tmp / name
+        if not f.exists():
+            try:
+                f.write_text(text, encoding="utf-8")
+            except OSError:
+                pass
+    return tmp
+
+
+def rip_into_place(mk, drive_index, title, final, root, on_progress=None):
+    """Rip `title` straight onto the library's own filesystem and rename it
+    into place, so a rip is written once and never copied.
+
+    MakeMKV picks the file name itself (title_t00.mkv), so it writes into
+    <root>/.diskrip-tmp/<job>-t<NN>/ and the one .mkv found there is renamed
+    to `final` (same filesystem, so instant and atomic). A taken name gets
+    ' (2)'; nothing is overwritten. A failed rip's partial file is removed.
+    Returns the final Path, or None if MakeMKV failed (mk.last_rip_error)."""
+    final, root = Path(final), Path(root)
+    need = (title.size_bytes or 0) + RIP_HEADROOM
+    free = paths.free_bytes(root)
+    if free < need:
+        size = f"{title.size_bytes / 1e9:.1f} GB" if title.size_bytes else "an unknown amount"
+        die(f"Not enough space in {root} to rip title {title.id}: it needs {size} "
+            f"plus 2 GB headroom, but only {free / 1e9:.1f} GB is free.")
+    job = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + os.urandom(3).hex()
+    tmpdir = _rip_tmp_root(root) / f"{job}-t{title.id:02d}"
+    tmpdir.mkdir()
+    ripped = mk.rip(drive_index, title, str(tmpdir), on_progress)
+    mkvs = sorted(tmpdir.glob("*.mkv"))
+    if not ripped:
+        shutil.rmtree(tmpdir, ignore_errors=True)    # a partial rip is useless
+        return None
+    if len(mkvs) != 1:
+        die(f"Expected one ripped file in {tmpdir}, found {len(mkvs)}; left there "
+            "for you to look at.")
+    final.parent.mkdir(parents=True, exist_ok=True)
+    target, n = final, 1
+    while target.exists():
+        n += 1
+        target = final.with_name(f"{final.stem} ({n}){final.suffix}")
+    os.replace(mkvs[0], target)
+    try:
+        tmpdir.rmdir()
+    except OSError:
+        pass
+    return target
+
+
+def sweep_rip_tmp(root, max_age_hours=24):
+    """Delete rip folders left in <root>/.diskrip-tmp by a crash or restart,
+    once older than max_age_hours. Only folders named like Disk-Rip's own jobs
+    are touched. Returns the names removed."""
+    tmp = Path(root) / RIP_TMP
+    removed = []
+    try:
+        entries = list(tmp.iterdir())
+    except OSError:
+        return removed
+    cutoff = time.time() - max_age_hours * 3600
+    for d in entries:
+        try:
+            if d.is_dir() and _RIP_JOB_RE.match(d.name) and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d)
+                removed.append(d.name)
+        except OSError:
+            continue
+    return removed
+
+
 def execute_movie(mk, p, cfg, dry_run):
     folder, fname = p.folder_and_file()
     dest_dir = root_for(cfg, "movies") / folder
@@ -1272,11 +1355,10 @@ def execute_movie(mk, p, cfg, dry_run):
         print(dim("  [dry-run] would rip title "
                   f"t{p.main_title.id:02d} and move to the path above"))
         return
-    ripped = mk.rip(p.disc.drive_index, p.main_title, cfg["work_dir"])
-    if not ripped:
+    final = rip_into_place(mk, p.disc.drive_index, p.main_title, final,
+                           root_for(cfg, "movies"))
+    if not final:
         die("Rip failed - MakeMKV returned an error (see messages above).")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(ripped), str(final))
     print(green(f"  ✓ {final}"))
     if cfg.get("write_nfo"):
         write_movie_nfo(dest_dir / (fname[:-4] + ".nfo"), p)
@@ -1298,12 +1380,10 @@ def execute_tv(mk, p, cfg, dry_run):
         if dry_run:
             print(dim(f"      [dry-run] would move to {final}"))
             continue
-        ripped = mk.rip(p.disc.drive_index, t, cfg["work_dir"])
-        if not ripped:
+        final = rip_into_place(mk, p.disc.drive_index, t, final, root_for(cfg, "tv"))
+        if not final:
             print(red(f"      ! rip failed for t{t.id:02d}, skipping"))
             continue
-        season_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(ripped), str(final))
         print(green(f"      ✓ {final}"))
         if cfg.get("write_nfo"):
             write_episode_nfo(season_dir / (fname[:-4] + ".nfo"), p, ep)

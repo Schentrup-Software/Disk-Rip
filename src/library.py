@@ -1429,6 +1429,29 @@ def check_space(moves):
         dr.die("Not enough free space - nothing was moved.\n  " + "\n  ".join(problems))
 
 
+def sweep_parts(root, max_age_hours=24, depth=3):
+    """Delete '<video>.part' files (half-finished copies from a crash) under
+    `root`, up to `depth` folders down, once older than max_age_hours.
+    Returns their paths relative to root."""
+    root = Path(root)
+    cutoff = time.time() - max_age_hours * 3600
+    removed = []
+    for d, dirs, files in os.walk(root):
+        rel = os.path.relpath(d, root)
+        if rel != "." and rel.count(os.sep) + 1 >= depth:
+            dirs[:] = []
+        for f in files:
+            p = Path(d) / f
+            if p.suffix == ".part" and Path(p.stem).suffix.lower() in VIDEO_EXT:
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink()
+                        removed.append(str(p.relative_to(root)))
+                except OSError:
+                    continue
+    return removed
+
+
 def _sidecars(src):
     """Non-video files that belong to a video ('Movie.srt', 'Movie.en.srt')."""
     src = Path(src)

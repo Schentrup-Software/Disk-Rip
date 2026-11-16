@@ -273,6 +273,19 @@ def check_destination(path, *, app_dir=None, container=None, mountinfo=None,
         check_mounted("destination", s, mountinfo=mountinfo, stat=stat)
 
 
+def free_bytes(path):
+    """Bytes available to us on the filesystem holding `path` (or its nearest
+    existing parent)."""
+    p = Path(os.path.abspath(str(path)))
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    if hasattr(os, "statvfs"):
+        st = os.statvfs(str(p))
+        return st.f_bavail * st.f_frsize
+    import shutil
+    return shutil.disk_usage(str(p)).free
+
+
 def overlap_warnings(roots):
     """Warnings (not errors) for a library root nested inside the rips root
     or the other way round. `roots` maps short name -> path (or None)."""

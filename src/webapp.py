@@ -349,7 +349,6 @@ class App:
         return {"started": True, "count": len(self.ripjob["items"])}
 
     def _rip_worker(self, kind):
-        import shutil
         job = self.ripjob
         titles = {t.id: t for t in self.disc.titles}
         root_name = "movies" if kind == "movie" else "tv"
@@ -371,26 +370,31 @@ class App:
                     _item["pct"] = pct
                     _item["phase"] = phase
 
-                ripped = self.mk.rip(self.disc.drive_index, t,
-                                     self.cfg["work_dir"], on_progress=progress)
-                if not ripped:
-                    item["status"] = "failed"
-                    item["error"] = self.mk.last_rip_error or "rip failed"
-                    continue
+                # rip straight onto the library's filesystem, then rename
+                # into place - a rip is written once, never copied
                 try:
-                    dr.root_for(self.cfg, root_name)   # the share may have dropped
+                    root = dr.root_for(self.cfg, root_name)   # the share may have dropped
                     paths.check_destination(target.parent)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(ripped), str(target))
+                    final = dr.rip_into_place(self.mk, self.disc.drive_index, t, target,
+                                              root, on_progress=progress)
                 except paths.RootError as e:
                     item["status"] = "failed"
                     item["error"] = str(e)
                     job["root"] = e.name
                     continue
+                except dr.DiskRipError as e:
+                    item["status"] = "failed"
+                    item["error"] = str(e)
+                    continue
                 except OSError as e:
                     item["status"] = "failed"
-                    item["error"] = f"couldn't move to NAS: {e}"
+                    item["error"] = f"couldn't write to the library: {e}"
                     continue
+                if not final:
+                    item["status"] = "failed"
+                    item["error"] = self.mk.last_rip_error or "rip failed"
+                    continue
+                item["target"] = str(final)
                 item["pct"] = 100
                 item["status"] = "done"
         except dr.DiskRipError as e:
@@ -764,6 +768,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
 
 
+def sweep_leftovers(cfg):
+    """At startup, delete what a crash or restart left behind: rip folders in
+    <root>/.diskrip-tmp and half-copied '<video>.part' files, once they are
+    older than DISKRIP_STALE_TMP_HOURS (default 24). Nothing else is touched."""
+    try:
+        hours = float(os.environ.get("DISKRIP_STALE_TMP_HOURS") or 24)
+    except ValueError:
+        hours = 24
+    for entry in cfg.get("_roots", {}).values():
+        if not entry["ok"] or entry["key"] == "work_dir":
+            continue
+        gone = dr.sweep_rip_tmp(entry["path"], hours)
+        gone += library.sweep_parts(entry["path"], hours)
+        for name in gone:
+            print(f"  removed leftover {name} from {entry['key']}")
+
+
 def main():
     import argparse
     env = os.environ
@@ -780,6 +801,7 @@ def main():
         args.no_browser = True        # nobody to open a browser for
 
     Handler.app = App(args.config)
+    sweep_leftovers(Handler.app.cfg)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     shown = "localhost" if args.host in ("0.0.0.0", "::") else args.host
     url = f"http://{shown}:{args.port}"
