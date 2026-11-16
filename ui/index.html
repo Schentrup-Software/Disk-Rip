@@ -17,6 +17,13 @@
     display:flex; align-items:center; gap:14px; }
   header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
   header .sub { color:var(--dim); font-size:12px; }
+  /* mode switch: rip a disc | organize an already-ripped folder (/library) */
+  .tabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:9px; padding:3px; }
+  .tabs a { color:var(--dim); text-decoration:none; font-size:13px; font-weight:600;
+    padding:5px 12px; border-radius:6px; }
+  .tabs a:hover { color:var(--text); }
+  .tabs a.on { background:var(--accent); color:#fff; }
   main { max-width:1200px; margin:0 auto; padding:20px; }
   .step { background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:16px 18px; margin-bottom:16px; }
@@ -129,6 +136,10 @@
 <body>
 <header>
   <h1>💿 Disk-Rip</h1>
+  <nav class="tabs" id="mode-tabs">
+    <a href="/" class="on">Rip a disc</a>
+    <a href="/library">Organize a folder</a>
+  </nav>
   <span class="sub">MakeMKV + TMDB · drag titles onto episodes</span>
 </header>
 <main>
@@ -730,6 +741,8 @@ function resetWizard(){
   window.scrollTo({top:0, behavior:'smooth'});
 }
 
+// the static demo (GitHub Pages) has no backend, so there is no Library page to link to
+if(location.pathname.includes('/demo')) document.getElementById('mode-tabs').classList.add('hidden');
 goStep(1);
 loadDrives();
 </script>
